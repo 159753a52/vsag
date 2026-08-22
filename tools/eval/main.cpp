@@ -76,6 +76,9 @@ parse_args(argparse::ArgumentParser& parser, int argc, char** argv) {
     parser.add_argument("--delete-index-after-search")
         .default_value(false)
         .help("Delete index after search");
+    parser.add_argument("--set_immutable")
+        .default_value(false)
+        .help("Set the index immutable before search");
     parser.add_argument("--topk")
         .default_value(10)
         .help("The topk value for knn search or knn_filter search")
@@ -87,6 +90,10 @@ parse_args(argparse::ArgumentParser& parser, int argc, char** argv) {
     parser.add_argument("--search-query-count")
         .default_value(100000)
         .help("The number of queries to run for search performance evaluation")
+        .scan<'i', uint64_t>();
+    parser.add_argument("--warmup-query-count")
+        .default_value(10000)
+        .help("The number of unmeasured warmup queries to run before search evaluation")
         .scan<'i', uint64_t>();
 
     // metrics
