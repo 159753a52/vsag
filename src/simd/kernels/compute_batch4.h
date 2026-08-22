@@ -63,16 +63,9 @@ ComputeBatch4Impl(const float* RESTRICT query,
                   float& r2,
                   float& r3,
                   float& r4,
-                  Batch4Fallback fallback = nullptr) {
+                  [[maybe_unused]] Batch4Fallback fallback = nullptr) {
     using V = typename T::FloatVec;
     constexpr int W = T::Width;
-
-    if constexpr (W > 1) {
-        if (dim < static_cast<uint64_t>(W)) {
-            fallback(query, dim, c1, c2, c3, c4, r1, r2, r3, r4);
-            return;
-        }
-    }
 
     V s1 = T::zero();
     V s2 = T::zero();
@@ -80,6 +73,45 @@ ComputeBatch4Impl(const float* RESTRICT query,
     V s4 = T::zero();
 
     uint64_t i = 0;
+    // Four vector chunks per iteration to maximize the number of independent
+    // code loads in flight; accumulation order per code is unchanged, so
+    // results stay bit-identical.
+    for (; i + 4 * W <= dim; i += 4 * W) {
+        const V qa = T::load(query + i);
+        const V qb = T::load(query + i + W);
+        const V qc = T::load(query + i + 2 * W);
+        const V qd = T::load(query + i + 3 * W);
+        s1 = batch4_accumulate<T, Kind>(qa, T::load(c1 + i), s1);
+        s2 = batch4_accumulate<T, Kind>(qa, T::load(c2 + i), s2);
+        s3 = batch4_accumulate<T, Kind>(qa, T::load(c3 + i), s3);
+        s4 = batch4_accumulate<T, Kind>(qa, T::load(c4 + i), s4);
+        s1 = batch4_accumulate<T, Kind>(qb, T::load(c1 + i + W), s1);
+        s2 = batch4_accumulate<T, Kind>(qb, T::load(c2 + i + W), s2);
+        s3 = batch4_accumulate<T, Kind>(qb, T::load(c3 + i + W), s3);
+        s4 = batch4_accumulate<T, Kind>(qb, T::load(c4 + i + W), s4);
+        s1 = batch4_accumulate<T, Kind>(qc, T::load(c1 + i + 2 * W), s1);
+        s2 = batch4_accumulate<T, Kind>(qc, T::load(c2 + i + 2 * W), s2);
+        s3 = batch4_accumulate<T, Kind>(qc, T::load(c3 + i + 2 * W), s3);
+        s4 = batch4_accumulate<T, Kind>(qc, T::load(c4 + i + 2 * W), s4);
+        s1 = batch4_accumulate<T, Kind>(qd, T::load(c1 + i + 3 * W), s1);
+        s2 = batch4_accumulate<T, Kind>(qd, T::load(c2 + i + 3 * W), s2);
+        s3 = batch4_accumulate<T, Kind>(qd, T::load(c3 + i + 3 * W), s3);
+        s4 = batch4_accumulate<T, Kind>(qd, T::load(c4 + i + 3 * W), s4);
+    }
+    // Two vector chunks per iteration: the eight code loads in flight overlap
+    // their latencies instead of serializing behind one query load.
+    for (; i + 2 * W <= dim; i += 2 * W) {
+        const V qa = T::load(query + i);
+        const V qb = T::load(query + i + W);
+        s1 = batch4_accumulate<T, Kind>(qa, T::load(c1 + i), s1);
+        s2 = batch4_accumulate<T, Kind>(qa, T::load(c2 + i), s2);
+        s3 = batch4_accumulate<T, Kind>(qa, T::load(c3 + i), s3);
+        s4 = batch4_accumulate<T, Kind>(qa, T::load(c4 + i), s4);
+        s1 = batch4_accumulate<T, Kind>(qb, T::load(c1 + i + W), s1);
+        s2 = batch4_accumulate<T, Kind>(qb, T::load(c2 + i + W), s2);
+        s3 = batch4_accumulate<T, Kind>(qb, T::load(c3 + i + W), s3);
+        s4 = batch4_accumulate<T, Kind>(qb, T::load(c4 + i + W), s4);
+    }
     for (; i + W <= dim; i += W) {
         V q = T::load(query + i);
         s1 = batch4_accumulate<T, Kind>(q, T::load(c1 + i), s1);
@@ -92,9 +124,26 @@ ComputeBatch4Impl(const float* RESTRICT query,
     r3 += T::reduce_add(s3);
     r4 += T::reduce_add(s4);
 
-    if constexpr (W > 1) {
-        if (dim > i) {
-            fallback(query + i, dim - i, c1 + i, c2 + i, c3 + i, c4 + i, r1, r2, r3, r4);
+    // The dim % W remainder is handled inline: falling back to narrower SIMD
+    // tiers costs two extra out-of-line calls per invocation on the search hot
+    // path (e.g. dim = 100 spilled a 4-wide tail from AVX512 down to SSE).
+    if constexpr (Kind == Batch4Kind::IP) {
+        for (; i < dim; ++i) {
+            r1 += query[i] * c1[i];
+            r2 += query[i] * c2[i];
+            r3 += query[i] * c3[i];
+            r4 += query[i] * c4[i];
+        }
+    } else {
+        for (; i < dim; ++i) {
+            const float d1 = query[i] - c1[i];
+            const float d2 = query[i] - c2[i];
+            const float d3 = query[i] - c3[i];
+            const float d4 = query[i] - c4[i];
+            r1 += d1 * d1;
+            r2 += d2 * d2;
+            r3 += d3 * d3;
+            r4 += d4 * d4;
         }
     }
 }
