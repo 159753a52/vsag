@@ -21,20 +21,20 @@
 
 namespace vsag {
 
-#define DECLARE_SQ8_UNIFORM_FUNCTIONS(ns)                        \
-    namespace ns {                                               \
-    float                                                        \
-    SQ8UniformComputeCodesIP(const uint8_t* RESTRICT codes1,     \
-                             const uint8_t* RESTRICT codes2,     \
-                             uint64_t dim);                      \
-    void                                                         \
-    SQ8UniformComputeCodesIPBatch(const uint8_t* RESTRICT query, \
-                                  const uint8_t* RESTRICT codes, \
-                                  uint64_t dim,                  \
-                                  uint64_t n_codes,              \
-                                  uint64_t code_stride,          \
-                                  float* RESTRICT out);          \
-    void                                                         \
+#define DECLARE_SQ8_UNIFORM_FUNCTIONS(ns)                         \
+    namespace ns {                                                \
+    float                                                         \
+    SQ8UniformComputeCodesIP(const uint8_t* RESTRICT codes1,      \
+                             const uint8_t* RESTRICT codes2,      \
+                             uint64_t dim);                       \
+    void                                                          \
+    SQ8UniformComputeCodesIPBatch(const uint8_t* RESTRICT query,  \
+                                  const uint8_t* RESTRICT codes,  \
+                                  uint64_t dim,                   \
+                                  uint64_t n_codes,               \
+                                  uint64_t code_stride,           \
+                                  float* RESTRICT out);           \
+    void                                                          \
     SQ8UniformComputeCodesIPBatch4(const uint8_t* RESTRICT query, \
                                    const uint8_t* RESTRICT code1, \
                                    const uint8_t* RESTRICT code2, \

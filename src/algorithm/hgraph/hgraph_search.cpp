@@ -814,8 +814,8 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         }
         search_result->Pop();
     }
-    DatasetImpl::Statistics(
-        dataset_results, std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
+    DatasetImpl::Statistics(dataset_results,
+                            std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
 
     // Generate reasoning report if reasoning context was created
     if (reasoning_ctx) {

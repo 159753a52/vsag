@@ -245,6 +245,45 @@ TEST_CASE("FP32 SIMD Compute", "[ut][simd]") {
     }
 }
 
+TEST_CASE("FP32 Batch4 preserves SIMD tail reduction order", "[ut][simd]") {
+    if (not SimdStatus::SupportAVX2()) {
+        return;
+    }
+
+    constexpr uint64_t kDim = 12;
+    const std::vector<float> query(kDim, 1.0F);
+    const std::vector<float> codes = {
+        1.0e20F,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        0.0F,
+        -1.0e20F,
+        3.0F,
+        4.0F,
+        5.0F,
+    };
+    float results[4] = {0.0F, 0.0F, 0.0F, 0.0F};
+
+    avx2::FP32ComputeIPBatch4(query.data(),
+                              kDim,
+                              codes.data(),
+                              codes.data(),
+                              codes.data(),
+                              codes.data(),
+                              results[0],
+                              results[1],
+                              results[2],
+                              results[3]);
+
+    for (const auto result : results) {
+        REQUIRE(result == 0.0F);
+    }
+}
+
 #define BENCHMARK_SIMD_COMPUTE(Simd, Comp)                                 \
     BENCHMARK_ADVANCED(#Simd #Comp) {                                      \
         for (int i = 0; i < count; ++i) {                                  \

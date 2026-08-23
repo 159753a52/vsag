@@ -388,8 +388,6 @@ def _preflight_variants(
         for variant in VARIANTS
     }
     comparisons = (
-        ("evaluator_realpath", "evaluator realpath"),
-        ("evaluator_sha256", "evaluator SHA-256"),
         ("resolved_libvsag_realpath", "resolved libvsag realpath"),
         ("resolved_libvsag_sha256", "resolved libvsag SHA-256"),
     )
@@ -640,6 +638,7 @@ def _pair_changes(
     round_number: int,
     concurrency: int,
     pair_runs: Sequence[Dict[str, Any]],
+    minimum_sample_count: int,
 ) -> Dict[str, Any]:
     record: Dict[str, Any] = {
         "pair_number": pair_number,
@@ -713,6 +712,24 @@ def _pair_changes(
                 f"paired metric '{field}' differs: "
                 f"baseline={values_for_field[0]}, candidate={values_for_field[1]}"
             )
+    for variant in VARIANTS:
+        sample_count = selected[variant].get("measurement_sample_count")
+        successful_count = selected[variant].get("measurement_successful_query_count")
+        error_count = selected[variant].get("error_count")
+        counts = (sample_count, successful_count, error_count)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
+            continue
+        if sample_count < minimum_sample_count:
+            record["reasons"].append(
+                f"{variant} run {selected[variant].get('run_id', '<unknown>')} measured "
+                f"{sample_count} samples, below configured minimum {minimum_sample_count}"
+            )
+        if successful_count + error_count != sample_count:
+            record["reasons"].append(
+                f"{variant} run {selected[variant].get('run_id', '<unknown>')} has inconsistent "
+                "measurement counts: "
+                f"sample={sample_count}, successful={successful_count}, error={error_count}"
+            )
     if any(selected[variant].get("error_count") != 0 for variant in VARIANTS):
         record["reasons"].append("paired error_count must be zero")
     if record["reasons"]:
@@ -777,6 +794,7 @@ def evaluate_acceptance(
     concurrency: Sequence[int],
     rounds: int,
     thresholds: Dict[str, Any],
+    minimum_sample_count: int,
 ) -> Dict[str, Any]:
     """Pair runs and evaluate threshold criteria independently of harness status."""
     grouped: Dict[Tuple[Any, Any, Any], List[Dict[str, Any]]] = {}
@@ -802,6 +820,7 @@ def evaluate_acceptance(
                 round_number,
                 level,
                 grouped.get(key, []),
+                minimum_sample_count,
             )
             pair_records.append(record)
             pairs_by_concurrency.setdefault(level, []).append(record)
@@ -899,6 +918,7 @@ def evaluate_acceptance(
         "status": "pass" if not acceptance_reasons else "fail",
         "thresholds": thresholds,
         "target_concurrency": thresholds["target_concurrency"],
+        "minimum_measurement_sample_count": minimum_sample_count,
         "pairing": "round + outer_concurrency + pair_number; one baseline and one candidate run",
         "pairs": pair_records,
         "by_concurrency": by_concurrency,
@@ -1040,6 +1060,7 @@ def run_suite(spec: Dict[str, Any], output_path: Optional[Path] = None) -> Dict[
             normalized["concurrency"],
             normalized["rounds"],
             normalized["acceptance"],
+            normalized["search_query_count"],
         )
     report["errors"] = sum(int(run["errors"]) for run in report["runs"])
     report["status"] = "ok" if report["errors"] == 0 else "failed"

@@ -36,13 +36,12 @@ PrefetchImpl<0>(const void* data) {
 
 // Prefetching sits on the per-neighbor search hot path, so this must stay
 // inlinable: an out-of-line call plus dispatch would dominate the profile.
-#define VSAG_PREFETCH_LINE(X)    \
-    case X:                      \
-        PrefetchImpl<X>(data);   \
+#define VSAG_PREFETCH_LINE(X)  \
+    case X:                    \
+        PrefetchImpl<X>(data); \
         break;
 
-inline void __attribute__((always_inline))
-PrefetchLines(const void* data, uint64_t size) {
+inline void __attribute__((always_inline)) PrefetchLines(const void* data, uint64_t size) {
     uint64_t n = std::min<uint64_t>(size / 64, 63ULL);
     switch (n) {
         VSAG_PREFETCH_LINE(0);

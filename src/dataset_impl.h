@@ -284,6 +284,7 @@ public:
 
     DatasetPtr
     Statistics(const std::string& Statisticss) override {
+        std::lock_guard<std::mutex> lock(this->statistics_mutex_);
         this->lazy_statistics_ = nullptr;
         this->Statistics_ = Statisticss;
         return shared_from_this();
@@ -291,6 +292,7 @@ public:
 
     DatasetPtr
     Statistics(std::shared_ptr<LazyStatistics> statistics) {
+        std::lock_guard<std::mutex> lock(this->statistics_mutex_);
         this->lazy_statistics_ = std::move(statistics);
         return shared_from_this();
     }
@@ -310,8 +312,7 @@ public:
 
     std::string
     GetStatistics() const override {
-        this->MaterializeStatistics();
-        return this->Statistics_;
+        return this->GetStatisticsSnapshot();
     }
 
     DatasetPtr
@@ -385,10 +386,10 @@ public:
     MakeEmptyDataset();
 
 private:
-    // Render the deferred statistics payload into Statistics_ exactly once; safe
-    // under concurrent GetStatistics() calls.
-    void
-    MaterializeStatistics() const;
+    // Render deferred statistics and return a snapshot while holding the same
+    // lock used by eager and lazy setters.
+    std::string
+    GetStatisticsSnapshot() const;
 
     static const std::string&
     HierarchyPathsPrefix() {

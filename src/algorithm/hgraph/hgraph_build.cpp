@@ -288,6 +288,13 @@ HGraph::build_by_odescent(const DatasetPtr& data) {
 
 std::vector<int64_t>
 HGraph::Add(const DatasetPtr& data) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support add");
+    }
+
     std::unique_lock<std::mutex> mci_add_lock(this->mci_add_mutex_, std::defer_lock);
     if (this->mci_parameters_.enabled) {
         mci_add_lock.lock();
@@ -680,9 +687,8 @@ HGraph::publish_unique_under_shared_global_lock(const void* data,
     // writer critical section. Slow-path readers stay safe through the
     // per-node neighbor locks the publish path acquires.
     read_lock.unlock();
-    this->global_lock_.WithWriterCriticalSection([&]() {
-        this->publish_unique_to_graphs(data, level, inner_id, param, probe, context);
-    });
+    this->global_lock_.WithWriterCriticalSection(
+        [&]() { this->publish_unique_to_graphs(data, level, inner_id, param, probe, context); });
 }
 
 void
@@ -834,9 +840,8 @@ HGraph::ensure_physical_code_capacity(CodeSlotIdType required_capacity) {
             pending.store(false, std::memory_order_release);
         }
     } pending_reset{this->physical_code_resize_pending_};
-    this->global_lock_.WithWriterCriticalSection([&]() {
-        this->ensure_physical_code_capacity_unlocked(required_capacity);
-    });
+    this->global_lock_.WithWriterCriticalSection(
+        [&]() { this->ensure_physical_code_capacity_unlocked(required_capacity); });
 }
 
 void

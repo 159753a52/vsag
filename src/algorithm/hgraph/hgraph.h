@@ -58,6 +58,7 @@
 namespace vsag {
 class FlattenOptimizedBuildInterface;
 class HGraphOptimizedBuildSession;
+class HGraphConcurrencyTestAccessor;
 class IteratorFilterContext;
 
 // Scalar MCI hybrid-search fields required to render search statistics.
@@ -399,10 +400,9 @@ public:
                      DistanceRecordVector* rabitq_lower_bound_candidates = nullptr) const;
 
 private:
-    // RAII guard for the reader side of global_lock_. Tracks per-thread
-    // nesting so recursive acquisitions on one thread (e.g. MCI's inner
-    // searches) never self-deadlock against a draining writer, and supports
-    // unlock()/lock() cycles around capacity-growth critical sections.
+    // RAII guard for the reader side of global_lock_. Active guards form a
+    // thread-local stack, so recursive acquisitions find an existing grant
+    // for the same HGraph even when another HGraph is nested between them.
     class GlobalReadGuard {
     public:
         GlobalReadGuard() = default;
@@ -433,23 +433,20 @@ private:
 
     private:
         friend class HGraph;
-        enum class Kind { kNone, kFast, kSlow, kNested };
-        GlobalReadGuard(const HGraph* owner, Kind kind);
+        friend class HGraphConcurrencyTestAccessor;
+        enum class Kind { kNone, kFast, kSlow };
         const HGraph* owner_{nullptr};
         Kind kind_{Kind::kNone};
+        bool owns_underlying_lock_{false};
+        uint32_t slot_index_{0};
+        GlobalReadGuard* previous_{nullptr};
     };
 
     [[nodiscard]] GlobalReadGuard
     acquire_global_read_lock() const;
 
-    struct ThreadLocalReadState {
-        const HGraph* owner{nullptr};
-        uint32_t depth{0};
-        uint32_t slot_index{0};
-    };
-
-    static ThreadLocalReadState&
-    tls_read_state();
+    static GlobalReadGuard*&
+    tls_top_read_guard();
 
     uint32_t
     reader_slot_index() const {
@@ -937,6 +934,9 @@ private:
     // excluding unique writers (resize, tune, remove, immutable flip) from
     // searches and shared-mode publishes.
     mutable BiasedRwLock global_lock_;
+    // Prevents SetImmutable() from completing while an Add() that passed the
+    // mutable-state check is still in flight.
+    mutable std::shared_mutex immutable_transition_mutex_;
     mutable std::shared_mutex persistent_codes_mutex_;  // pins flatten storage during MCI search
     mutable std::mutex mci_build_mutex_;                // serializes full MCI reconstruction
     mutable std::mutex mci_add_mutex_;                  // serializes MCI-enabled Add calls
@@ -946,6 +946,8 @@ private:
     // Single-flights physical code growth before taking the global writer lock.
     mutable std::mutex physical_code_resize_mutex_;
     std::atomic<bool> physical_code_resize_pending_{false};
+
+    friend class HGraphConcurrencyTestAccessor;
 
     std::atomic<InnerIdType> max_capacity_{0};               // allocated storage capacity
     std::atomic<CodeSlotIdType> physical_code_capacity_{0};  // physical flatten slot capacity

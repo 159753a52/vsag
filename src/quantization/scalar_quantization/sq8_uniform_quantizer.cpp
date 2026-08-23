@@ -280,17 +280,13 @@ SQ8UniformQuantizer<metric>::ComputeDistsBatch4Impl(Computer<SQ8UniformQuantizer
         const auto query_norm_f = static_cast<float>(query_norm);
         norm_type code_norm = 0;
         std::memcpy(&code_norm, codes1 + offset_norm_, sizeof(norm_type));
-        dists1 =
-            (query_norm_f + static_cast<float>(code_norm) - 2.F * dists1) * scalar_rate_;
+        dists1 = (query_norm_f + static_cast<float>(code_norm) - 2.F * dists1) * scalar_rate_;
         std::memcpy(&code_norm, codes2 + offset_norm_, sizeof(norm_type));
-        dists2 =
-            (query_norm_f + static_cast<float>(code_norm) - 2.F * dists2) * scalar_rate_;
+        dists2 = (query_norm_f + static_cast<float>(code_norm) - 2.F * dists2) * scalar_rate_;
         std::memcpy(&code_norm, codes3 + offset_norm_, sizeof(norm_type));
-        dists3 =
-            (query_norm_f + static_cast<float>(code_norm) - 2.F * dists3) * scalar_rate_;
+        dists3 = (query_norm_f + static_cast<float>(code_norm) - 2.F * dists3) * scalar_rate_;
         std::memcpy(&code_norm, codes4 + offset_norm_, sizeof(norm_type));
-        dists4 =
-            (query_norm_f + static_cast<float>(code_norm) - 2.F * dists4) * scalar_rate_;
+        dists4 = (query_norm_f + static_cast<float>(code_norm) - 2.F * dists4) * scalar_rate_;
     } else if constexpr (metric == MetricType::METRIC_TYPE_IP or
                          metric == MetricType::METRIC_TYPE_COSINE) {
         SQ8UniformComputeCodesIPBatch4(computer.buf_,

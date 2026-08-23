@@ -17,13 +17,29 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
+#include <random>
 #include <vector>
 
+#include "impl/allocator/default_allocator.h"
 #include "impl/allocator/safe_allocator.h"
 #include "memmove_heap.h"
 #include "standard_heap.h"
 #include "unittest.h"
 using namespace vsag;
+
+namespace {
+class RecordingAllocator : public DefaultAllocator {
+public:
+    void*
+    Allocate(uint64_t size) override {
+        allocation_sizes.push_back(size);
+        return DefaultAllocator::Allocate(size);
+    }
+
+    std::vector<uint64_t> allocation_sizes;
+};
+}  // namespace
 
 class TestDistanceHeap {
 public:
@@ -94,6 +110,142 @@ TEST_CASE_METHOD(TestDistanceHeap, "standard_heap test", "[ut][distance_heap]") 
         RunBasicTest(heap3, false);
         StandardHeap<false, false> heap4(allocator.get(), max_size);
         RunBasicTest(heap4, false);
+    }
+}
+
+TEST_CASE("standard_heap bounds initial reserve", "[ut][distance_heap]") {
+    // Since callers pass the expected frontier size (e.g. ef) as a reservation
+    // hint, the constructor clamps it into [64, 512]: small hints are raised so
+    // a single allocation covers typical searches, huge ones are capped.
+    constexpr uint64_t min_capacity = 64;
+    constexpr uint64_t max_capacity = 512;
+    const auto expected_bytes = [](uint64_t capacity) {
+        return capacity * sizeof(DistanceHeap::DistanceRecord);
+    };
+    const auto check_initial_reserve = [&](int64_t max_size, uint64_t expected_capacity) {
+        RecordingAllocator allocator;
+        {
+            StandardHeap<true, true> heap(&allocator, max_size);
+            REQUIRE(heap.Empty());
+        }
+        REQUIRE(allocator.allocation_sizes.size() == 1);
+        REQUIRE(allocator.allocation_sizes.front() == expected_bytes(expected_capacity));
+    };
+
+    check_initial_reserve(3, min_capacity);
+    check_initial_reserve(std::numeric_limits<int64_t>::max(), max_capacity);
+    check_initial_reserve(200, 200);
+    check_initial_reserve(-1, min_capacity);
+}
+
+TEST_CASE("standard_heap small fixed and dynamic behavior", "[ut][distance_heap]") {
+    auto allocator = SafeAllocator::FactoryDefaultAllocator();
+
+    StandardHeap<true, true> fixed_heap(allocator.get(), 3);
+    fixed_heap.Push(3.0F, 3);
+    fixed_heap.Push(1.0F, 1);
+    fixed_heap.Push(2.0F, 2);
+    fixed_heap.Push(4.0F, 4);
+    REQUIRE(fixed_heap.Size() == 3);
+    REQUIRE(fixed_heap.Top().first == 3.0F);
+
+    StandardHeap<true, false> dynamic_heap(allocator.get(), -1);
+    dynamic_heap.Push(3.0F, 3);
+    dynamic_heap.Push(1.0F, 1);
+    dynamic_heap.Push(2.0F, 2);
+    REQUIRE(dynamic_heap.Size() == 3);
+    REQUIRE(dynamic_heap.Top().first == 3.0F);
+    dynamic_heap.Pop();
+    REQUIRE(dynamic_heap.Top().first == 2.0F);
+    dynamic_heap.Pop();
+    REQUIRE(dynamic_heap.Top().first == 1.0F);
+}
+
+TEST_CASE("standard_heap randomized differential vs std heap", "[ut][distance_heap]") {
+    auto allocator = SafeAllocator::FactoryDefaultAllocator();
+    std::mt19937_64 rng(20260822);
+
+    // Distances are made strictly increasing by appending a tiny per-index
+    // epsilon, so every key is unique and the extraction order is fully
+    // determined. The optimized heap wrapper must match the standard heap
+    // element for element.
+    for (int iter = 0; iter < 20; ++iter) {
+        const auto count = 1 + static_cast<int>(rng() % 300);
+        const int64_t cap = 1 + static_cast<int64_t>(rng() % 256);
+        std::vector<float> base_dists =
+            fixtures::GenerateVectors<float>(count, 1, static_cast<int>(rng()), false);
+        for (int i = 0; i < count; ++i) {
+            base_dists[i] += static_cast<float>(i) * 1e-3F;
+        }
+
+        for (auto max_heap : {true, false}) {
+            for (auto fixed : {true, false}) {
+                std::vector<DistanceHeap::DistanceRecord> ref;
+                auto push_ref = [&](float dist, InnerIdType id) {
+                    ref.emplace_back(dist, id);
+                    if (max_heap) {
+                        std::push_heap(ref.begin(), ref.end(), DistanceHeap::CompareMax());
+                    } else {
+                        std::push_heap(ref.begin(), ref.end(), DistanceHeap::CompareMin());
+                    }
+                    if (fixed && static_cast<int64_t>(ref.size()) > cap) {
+                        if (max_heap) {
+                            std::pop_heap(ref.begin(), ref.end(), DistanceHeap::CompareMax());
+                        } else {
+                            std::pop_heap(ref.begin(), ref.end(), DistanceHeap::CompareMin());
+                        }
+                        ref.pop_back();
+                    }
+                };
+
+                std::unique_ptr<DistanceHeap> heap;
+                if (max_heap && fixed) {
+                    heap = std::make_unique<StandardHeap<true, true>>(allocator.get(), cap);
+                } else if (max_heap) {
+                    heap = std::make_unique<StandardHeap<true, false>>(allocator.get(), -1);
+                } else if (fixed) {
+                    heap = std::make_unique<StandardHeap<false, true>>(allocator.get(), cap);
+                } else {
+                    heap = std::make_unique<StandardHeap<false, false>>(allocator.get(), -1);
+                }
+
+                std::vector<DistanceHeap::DistanceRecord> popped_std;
+                std::vector<DistanceHeap::DistanceRecord> popped_impl;
+                int pushed = 0;
+                int pop_pressure = 0;
+                while (pushed < count || !ref.empty()) {
+                    const bool do_push = (pushed < count) && ((rng() % 3 != 0) || ref.empty());
+                    if (do_push) {
+                        const float dist = base_dists[pushed];
+                        push_ref(dist, static_cast<InnerIdType>(pushed));
+                        heap->Push(dist, static_cast<InnerIdType>(pushed));
+                        ++pushed;
+                    } else {
+                        REQUIRE(!heap->Empty());
+                        REQUIRE(heap->Top().first == ref.front().first);
+                        popped_std.push_back(ref.front());
+                        popped_impl.push_back(heap->Top());
+                        if (max_heap) {
+                            std::pop_heap(ref.begin(), ref.end(), DistanceHeap::CompareMax());
+                        } else {
+                            std::pop_heap(ref.begin(), ref.end(), DistanceHeap::CompareMin());
+                        }
+                        ref.pop_back();
+                        heap->Pop();
+                    }
+                    REQUIRE(heap->Size() == ref.size());
+                    if (!ref.empty()) {
+                        REQUIRE(heap->Top().first == ref.front().first);
+                    }
+                }
+                // Full drain order must match exactly (keys are unique).
+                REQUIRE(popped_std.size() == popped_impl.size());
+                for (size_t i = 0; i < popped_std.size(); ++i) {
+                    REQUIRE(popped_std[i].first == popped_impl[i].first);
+                    REQUIRE(popped_std[i].second == popped_impl[i].second);
+                }
+            }
+        }
     }
 }
 

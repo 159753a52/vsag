@@ -110,6 +110,8 @@ search_config(const RequestContext& request, const Candidate& candidate) {
     config.top_k = static_cast<int>(request.top_k);
     config.search_query_count = request.query_count;
     config.num_threads_searching = static_cast<int32_t>(request.concurrency);
+    config.set_immutable = false;
+    config.warmup_query_count = 0;
     config.enable_memory = false;
     config.enable_recall = request.enable_recall;
     config.enable_percent_recall = false;

@@ -47,31 +47,31 @@ namespace vsag {
 
 class HGraphAnalyzer;
 
-HGraph::ThreadLocalReadState&
-HGraph::tls_read_state() {
-    static thread_local ThreadLocalReadState state;
-    return state;
-}
-
-HGraph::GlobalReadGuard::GlobalReadGuard(const HGraph* owner, Kind kind)
-    : owner_(owner), kind_(kind) {
+HGraph::GlobalReadGuard*&
+HGraph::tls_top_read_guard() {
+    static thread_local GlobalReadGuard* top = nullptr;
+    return top;
 }
 
 HGraph::GlobalReadGuard::GlobalReadGuard(const HGraph* owner) {
-    auto& tls = HGraph::tls_read_state();
-    if (tls.owner == owner && tls.depth > 0) {
-        ++tls.depth;
-        owner_ = owner;
-        kind_ = Kind::kNested;
-        return;
-    }
-    const uint32_t slot_index = owner->reader_slot_index();
-    const auto lock_kind = owner->global_lock_.LockShared(slot_index);
-    tls.owner = owner;
-    tls.depth = 1;
-    tls.slot_index = slot_index;
     owner_ = owner;
+    auto& top = HGraph::tls_top_read_guard();
+    for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+        if (guard->owner_ == owner) {
+            kind_ = guard->kind_;
+            slot_index_ = guard->slot_index_;
+            previous_ = top;
+            top = this;
+            return;
+        }
+    }
+
+    slot_index_ = owner->reader_slot_index();
+    const auto lock_kind = owner->global_lock_.LockShared(slot_index_);
     kind_ = (lock_kind == BiasedRwLock::SharedLockKind::kFast) ? Kind::kFast : Kind::kSlow;
+    owns_underlying_lock_ = true;
+    previous_ = top;
+    top = this;
 }
 
 HGraph::GlobalReadGuard::~GlobalReadGuard() {
@@ -79,9 +79,26 @@ HGraph::GlobalReadGuard::~GlobalReadGuard() {
 }
 
 HGraph::GlobalReadGuard::GlobalReadGuard(GlobalReadGuard&& other) noexcept
-    : owner_(other.owner_), kind_(other.kind_) {
+    : owner_(other.owner_),
+      kind_(other.kind_),
+      owns_underlying_lock_(other.owns_underlying_lock_),
+      slot_index_(other.slot_index_),
+      previous_(other.previous_) {
+    auto& top = HGraph::tls_top_read_guard();
+    if (top == &other) {
+        top = this;
+    } else {
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->previous_ == &other) {
+                guard->previous_ = this;
+                break;
+            }
+        }
+    }
     other.owner_ = nullptr;
     other.kind_ = Kind::kNone;
+    other.owns_underlying_lock_ = false;
+    other.previous_ = nullptr;
 }
 
 HGraph::GlobalReadGuard&
@@ -90,8 +107,24 @@ HGraph::GlobalReadGuard::operator=(GlobalReadGuard&& other) noexcept {
         this->unlock();
         owner_ = other.owner_;
         kind_ = other.kind_;
+        owns_underlying_lock_ = other.owns_underlying_lock_;
+        slot_index_ = other.slot_index_;
+        previous_ = other.previous_;
+        auto& top = HGraph::tls_top_read_guard();
+        if (top == &other) {
+            top = this;
+        } else {
+            for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+                if (guard->previous_ == &other) {
+                    guard->previous_ = this;
+                    break;
+                }
+            }
+        }
         other.owner_ = nullptr;
         other.kind_ = Kind::kNone;
+        other.owns_underlying_lock_ = false;
+        other.previous_ = nullptr;
     }
     return *this;
 }
@@ -109,22 +142,39 @@ HGraph::GlobalReadGuard::unlock() {
     if (kind_ == Kind::kNone) {
         return;
     }
-    auto& tls = HGraph::tls_read_state();
-    switch (kind_) {
-        case Kind::kFast:
-            owner_->global_lock_.FastUnlockShared(tls.slot_index);
-            break;
-        case Kind::kSlow:
+
+    auto& top = HGraph::tls_top_read_guard();
+    if (top == this) {
+        top = previous_;
+    } else {
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->previous_ == this) {
+                guard->previous_ = previous_;
+                break;
+            }
+        }
+    }
+
+    if (owns_underlying_lock_) {
+        GlobalReadGuard* successor = nullptr;
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->owner_ == owner_) {
+                successor = guard;
+                break;
+            }
+        }
+        if (successor != nullptr) {
+            successor->owns_underlying_lock_ = true;
+        } else if (kind_ == Kind::kFast) {
+            owner_->global_lock_.FastUnlockShared(slot_index_);
+        } else {
             owner_->global_lock_.UnlockShared();
-            break;
-        case Kind::kNested:
-        case Kind::kNone:
-            break;
+        }
     }
-    if (--tls.depth == 0) {
-        tls.owner = nullptr;
-    }
+
     kind_ = Kind::kNone;
+    owns_underlying_lock_ = false;
+    previous_ = nullptr;
 }
 
 HGraph::GlobalReadGuard
@@ -664,6 +714,11 @@ HGraph::GetVectorByInnerId(InnerIdType inner_id, float* data) const {
 
 void
 HGraph::SetImmutable() {
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::scoped_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
     if (this->immutable_.load(std::memory_order_acquire)) {
         return;
     }

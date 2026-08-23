@@ -180,9 +180,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
     Allocator* alloc = select_query_allocator(ctx, allocator_);
     // Concrete-typed pointer: hot-path Push/Pop/Top bypass the virtual
     // DistanceHeap interface and inline into the search loop.
-    auto top_candidates_ptr =
-        std::make_shared<StandardHeap<true, false>>(alloc,
-                                                    std::max<int64_t>(inner_search_param.ef, 64));
+    auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
+        alloc, std::max<int64_t>(inner_search_param.ef, 64));
     auto* top_candidates = top_candidates_ptr.get();
     StandardHeap<true, false> candidate_set_storage(alloc, -1);
     auto* candidate_set = &candidate_set_storage;
@@ -338,9 +337,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
 
     // Concrete-typed pointer: hot-path Push/Pop/Top bypass the virtual
     // DistanceHeap interface and inline into the search loop.
-    auto top_candidates_ptr =
-        std::make_shared<StandardHeap<true, false>>(alloc,
-                                                    std::max<int64_t>(inner_search_param.ef, 64));
+    auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
+        alloc, std::max<int64_t>(inner_search_param.ef, 64));
     auto* top_candidates = top_candidates_ptr.get();
     StandardHeap<true, false> candidate_set_storage(alloc, -1);
     auto* candidate_set = &candidate_set_storage;
@@ -575,9 +573,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
 
     // Concrete-typed pointer: hot-path Push/Pop/Top bypass the virtual
     // DistanceHeap interface and inline into the search loop.
-    auto top_candidates_ptr =
-        std::make_shared<StandardHeap<true, false>>(alloc,
-                                                    std::max<int64_t>(inner_search_param.ef, 64));
+    auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
+        alloc, std::max<int64_t>(inner_search_param.ef, 64));
     auto* top_candidates = top_candidates_ptr.get();
     StandardHeap<true, false> candidate_set_storage(alloc, -1);
     auto* candidate_set = &candidate_set_storage;

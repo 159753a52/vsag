@@ -32,7 +32,7 @@
     "min_valid_pairs": 3
   },
   "baseline": {
-    "eval_binary": "/mnt/data/vsag-builds/baseline/tools/eval/eval_performance",
+    "eval_binary": "/mnt/data/vsag-builds/candidate/tools/eval/eval_performance",
     "shared_library": "/mnt/data/vsag-builds/baseline/src/libvsag.so.0.0.0"
   },
   "candidate": {

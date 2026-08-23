@@ -47,8 +47,7 @@ public:
         const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
         auto& word = this->words_[word_id];
         if (word == 0) {
-            this->touched_words_[this->touched_count_++] =
-                static_cast<TouchedIndexType>(word_id);
+            this->touched_words_[this->touched_count_++] = static_cast<TouchedIndexType>(word_id);
             word = mask;
         } else {
             word |= mask;
@@ -73,8 +72,7 @@ public:
             return false;
         }
         if (word == 0) {
-            this->touched_words_[this->touched_count_++] =
-                static_cast<TouchedIndexType>(word_id);
+            this->touched_words_[this->touched_count_++] = static_cast<TouchedIndexType>(word_id);
         }
         word |= mask;
         return true;

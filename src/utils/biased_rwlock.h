@@ -1,4 +1,3 @@
-
 // Copyright 2024-present the vsag project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -84,17 +83,35 @@ public:
     void
     WithWriterCriticalSection(CriticalSection&& critical) {
         std::unique_lock<std::shared_mutex> exclusive(mutex_);
-        writer_pending_.store(true, std::memory_order_seq_cst);
+        WriterPendingGuard pending_guard(writer_pending_);
         for (auto& slot : reader_slots_) {
-            while (slot.count.load(std::memory_order_acquire) != 0) {
+            while (slot.count.load(std::memory_order_seq_cst) != 0) {
                 std::this_thread::yield();
             }
         }
         critical();
-        writer_pending_.store(false, std::memory_order_release);
     }
 
 private:
+    class WriterPendingGuard {
+    public:
+        explicit WriterPendingGuard(std::atomic<bool>& writer_pending)
+            : writer_pending_(writer_pending) {
+            writer_pending_.store(true, std::memory_order_seq_cst);
+        }
+
+        ~WriterPendingGuard() {
+            writer_pending_.store(false, std::memory_order_release);
+        }
+
+        WriterPendingGuard(const WriterPendingGuard&) = delete;
+        WriterPendingGuard&
+        operator=(const WriterPendingGuard&) = delete;
+
+    private:
+        std::atomic<bool>& writer_pending_;
+    };
+
     struct alignas(64) Slot {
         std::atomic<uint32_t> count{0};
     };
