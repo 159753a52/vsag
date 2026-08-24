@@ -15,45 +15,58 @@
 
 #include "standard_heap.h"
 
+#include <algorithm>
+#include <type_traits>
+
 namespace vsag {
 template <bool max_heap, bool fixed_size>
 StandardHeap<max_heap, fixed_size>::StandardHeap(Allocator* allocator, int64_t max_size)
     : DistanceHeap(allocator, max_size), queue_(allocator) {
     // Search heaps are usually created empty and grow to a small bounded
-    // frontier. Reserve the common initial capacity so each query does not
-    // repeatedly allocate and move heap records.
-    queue_.reserve(max_size > 0 ? static_cast<uint64_t>(max_size) : 64);
+    // frontier. Callers that know the expected frontier size (e.g. ef) pass
+    // it as max_size so a single reservation covers the whole query; the
+    // clamp only guards against pathological hints, and fixed_size=false
+    // heaps still grow without bound beyond it.
+    constexpr uint64_t kDefaultInitialReserve = 64;
+    constexpr uint64_t kMaxInitialReserve = 512;
+    uint64_t initial_reserve = kDefaultInitialReserve;
+    if (max_size > 0) {
+        initial_reserve = std::clamp<uint64_t>(
+            static_cast<uint64_t>(max_size), kDefaultInitialReserve, kMaxInitialReserve);
+    }
+    queue_.reserve(initial_reserve);
 }
 
 template <bool max_heap, bool fixed_size>
 void
 StandardHeap<max_heap, fixed_size>::Push(float dist, InnerIdType id) {
+    using CompareType = std::conditional_t<max_heap, CompareMax, CompareMin>;
     if constexpr (fixed_size) {
         if (this->queue_.size() == this->max_size_) {
             if constexpr (max_heap) {
                 if (dist > this->queue_.front().first) {
                     return;
                 }
-            } else {
-                if (dist < this->queue_.front().first) {
-                    return;
-                }
+            } else if (dist < this->queue_.front().first) {
+                return;
             }
         }
     }
-    DistanceRecord record{dist, id};
-    this->queue_.emplace_back(std::move(record));
-    if constexpr (max_heap) {
-        std::push_heap(this->queue_.begin(), this->queue_.end(), CompareMax());
-    } else {
-        std::push_heap(this->queue_.begin(), this->queue_.end(), CompareMin());
-    }
-
+    this->queue_.emplace_back(dist, id);
+    std::push_heap(this->queue_.begin(), this->queue_.end(), CompareType());
     if constexpr (fixed_size) {
         if (this->queue_.size() > max_size_) {
             this->Pop();
         }
     }
+}
+
+template <bool max_heap, bool fixed_size>
+void
+StandardHeap<max_heap, fixed_size>::Pop() {
+    using CompareType = std::conditional_t<max_heap, CompareMax, CompareMin>;
+    std::pop_heap(this->queue_.begin(), this->queue_.end(), CompareType());
+    this->queue_.pop_back();
 }
 
 template class StandardHeap<true, true>;

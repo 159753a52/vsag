@@ -28,6 +28,29 @@
 
 namespace vsag {
 
+namespace {
+
+// Defers the statistics JSON rendering until GetStatistics() is first read; the
+// search timing path never pays for it.
+class HGraphLazyStatistics : public LazyStatistics {
+public:
+    HGraphLazyStatistics(std::shared_ptr<const SearchStatistics> stats,
+                         MCIHybridSearchFields mci_fields)
+        : stats_(std::move(stats)), mci_fields_(std::move(mci_fields)) {
+    }
+
+    std::string
+    Dump() const override {
+        return MakeMCIStatistics(*this->stats_, this->mci_fields_).Dump();
+    }
+
+private:
+    std::shared_ptr<const SearchStatistics> stats_;
+    MCIHybridSearchFields mci_fields_;
+};
+
+}  // namespace
+
 static DatasetPtr
 make_empty_dataset_with_stats(const SearchStatistics& stats) {
     auto dataset_result = DatasetImpl::MakeEmptyDataset();
@@ -92,7 +115,7 @@ HGraph::KnnSearch(const DatasetPtr& query,
         fmt::format("ef_search({}) must be at least 1", params.ef_search));
 
     std::shared_lock<std::shared_mutex> force_remove_rlock;
-    std::shared_lock<std::shared_mutex> shared_lock;
+    GlobalReadGuard shared_lock;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         if (this->support_force_remove()) {
             force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
@@ -142,6 +165,7 @@ HGraph::KnnSearch(const DatasetPtr& query,
             search_param.ef = 1;
             search_param.is_inner_id_allowed = nullptr;
             search_param.enable_rabitq_one_bit_search = params.rabitq_one_bit_search;
+            search_param.skip_neighbor_locks = shared_lock.is_fast();
             if (search_param.ep == INVALID_ENTRY_POINT) {
                 return make_empty_dataset_with_stats();
             }
@@ -418,8 +442,8 @@ HGraph::RangeSearch(const DatasetPtr& query,
 [[nodiscard]] DatasetPtr
 HGraph::SearchWithRequest(const SearchRequest& request) const {
     ValidateSearchThreshold(request.threshold_);
-    SearchStatistics stats;
-    QueryContext ctx{.alloc = this->allocator_, .stats = &stats};
+    auto stats = std::make_shared<SearchStatistics>();
+    QueryContext ctx{.alloc = this->allocator_, .stats = stats.get()};
     if (request.search_allocator_ != nullptr) {
         ctx.alloc = request.search_allocator_;
     }
@@ -462,7 +486,7 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         fmt::format("ef_search({}) must be at least 1", params.ef_search));
 
     std::shared_lock<std::shared_mutex> force_remove_rlock;
-    std::shared_lock<std::shared_mutex> shared_lock;
+    GlobalReadGuard shared_lock;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         if (this->support_force_remove()) {
             force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
@@ -513,8 +537,8 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
                 const auto label = this->label_table_->GetLabelById(inner_id);
                 request.distance_batch_func_(&label, 1, &dist);
                 CHECK_ARGUMENT(std::isfinite(dist), "distance callback must return finite scores");
-                stats.AddDistance(SearchStatistics::DistancePhase::APPROXIMATE,
-                                  DistanceEvaluationBackend::UNKNOWN);
+                stats->AddDistance(SearchStatistics::DistancePhase::APPROXIMATE,
+                                   DistanceEvaluationBackend::UNKNOWN);
             } else {
                 precise_flatten->Query(&dist, computer, &inner_id, 1, &ctx);
             }
@@ -525,6 +549,9 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
 
     InnerSearchParam search_param;
     search_param.ep = this->entry_point_id_;
+    // Fast-path readers are excluded from concurrent graph mutations by the
+    // biased lock's writer drain, so per-node neighbor locks can be skipped.
+    search_param.skip_neighbor_locks = shared_lock.is_fast();
     search_param.topk = 1;
     search_param.ef = 1;
     search_param.is_inner_id_allowed = nullptr;
@@ -606,7 +633,7 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         if (params.enable_time_record) {
             search_param.time_cost = std::make_shared<Timer>();
             search_param.time_cost->SetThreshold(params.timeout_ms);
-            stats.is_timeout.store(false, std::memory_order_relaxed);
+            stats->is_timeout.store(false, std::memory_order_relaxed);
         }
         search_param.parallel_search_thread_count = params.parallel_search_thread_count;
 
@@ -712,26 +739,39 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
             }
         }
         auto result = this->pack_knn_result_with_extra_info(search_result, ctx.alloc);
-        result->Statistics(mci_result.MakeStatistics(stats).Dump());
+        DatasetImpl::Statistics(
+            result, std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
         return result;
     }
 
     // NaN is unordered and cannot be returned. Infinity remains a valid legacy result only when
     // threshold filtering is absent; the searcher has already kept it out of threshold heaps.
-    DistanceRecordVector finite_records(ctx.alloc);
-    finite_records.reserve(search_result->Size());
-    while (not search_result->Empty()) {
-        const auto record = search_result->Top();
-        search_result->Pop();
-        if (not std::isnan(record.first) and
-            (not request.threshold_.has_value() or std::isfinite(record.first))) {
-            finite_records.push_back(record);
+    bool needs_result_filter = request.threshold_.has_value();
+    if (not needs_result_filter) {
+        const auto* records = search_result->GetData();
+        for (uint64_t i = 0; i < search_result->Size(); ++i) {
+            if (std::isnan(records[i].first)) {
+                needs_result_filter = true;
+                break;
+            }
         }
     }
-    for (const auto& record : finite_records) {
-        search_result->Push(record);
+    if (needs_result_filter) {
+        DistanceRecordVector finite_records(ctx.alloc);
+        finite_records.reserve(search_result->Size());
+        while (not search_result->Empty()) {
+            const auto record = search_result->Top();
+            search_result->Pop();
+            if (not std::isnan(record.first) and
+                (not request.threshold_.has_value() or std::isfinite(record.first))) {
+                finite_records.push_back(record);
+            }
+        }
+        for (const auto& record : finite_records) {
+            search_result->Push(record);
+        }
+        filter_search_result_by_threshold(search_result, request.threshold_, ctx.alloc);
     }
-    filter_search_result_by_threshold(search_result, request.threshold_, ctx.alloc);
     while (search_result->Size() > static_cast<uint64_t>(k)) {
         search_result->Pop();
     }
@@ -739,7 +779,8 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
     // return an empty dataset directly if searcher returns nothing
     if (search_result->Empty()) {
         auto dataset_result = DatasetImpl::MakeEmptyDataset();
-        dataset_result->Statistics(mci_result.MakeStatistics(stats).Dump());
+        DatasetImpl::Statistics(
+            dataset_result, std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
         if (reasoning_ctx) {
             reasoning_ctx->DiagnoseExpectedTargets();
             dataset_result->Reasoning(reasoning_ctx->GenerateReport());
@@ -748,7 +789,10 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
     }
     auto count = static_cast<const int64_t>(search_result->Size());
 
-    Vector<InnerIdType> result_inner_ids(static_cast<size_t>(count), this->allocator_);
+    Vector<InnerIdType> result_inner_ids(this->allocator_);
+    if (reasoning_ctx != nullptr) {
+        result_inner_ids.resize(static_cast<size_t>(count));
+    }
 
     auto [dataset_results, dists, ids] = create_fast_dataset(count, ctx.alloc);
     char* extra_infos = nullptr;
@@ -762,13 +806,16 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         const auto& top = search_result->Top();
         dists[j] = top.first;
         ids[j] = this->label_table_->GetLabelById(top.second);
-        result_inner_ids[j] = top.second;
+        if (reasoning_ctx != nullptr) {
+            result_inner_ids[j] = top.second;
+        }
         if (extra_infos != nullptr) {
             this->extra_infos_->GetExtraInfoById(top.second, extra_infos + extra_info_size_ * j);
         }
         search_result->Pop();
     }
-    dataset_results->Statistics(mci_result.MakeStatistics(stats).Dump());
+    DatasetImpl::Statistics(dataset_results,
+                            std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
 
     // Generate reasoning report if reasoning context was created
     if (reasoning_ctx) {

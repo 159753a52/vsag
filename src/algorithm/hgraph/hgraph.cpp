@@ -47,6 +47,141 @@ namespace vsag {
 
 class HGraphAnalyzer;
 
+HGraph::GlobalReadGuard*&
+HGraph::tls_top_read_guard() {
+    static thread_local GlobalReadGuard* top = nullptr;
+    return top;
+}
+
+HGraph::GlobalReadGuard::GlobalReadGuard(const HGraph* owner) {
+    owner_ = owner;
+    auto& top = HGraph::tls_top_read_guard();
+    for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+        if (guard->owner_ == owner) {
+            kind_ = guard->kind_;
+            slot_index_ = guard->slot_index_;
+            previous_ = top;
+            top = this;
+            return;
+        }
+    }
+
+    slot_index_ = owner->reader_slot_index();
+    const auto lock_kind = owner->global_lock_.LockShared(slot_index_);
+    kind_ = (lock_kind == BiasedRwLock::SharedLockKind::kFast) ? Kind::kFast : Kind::kSlow;
+    owns_underlying_lock_ = true;
+    previous_ = top;
+    top = this;
+}
+
+HGraph::GlobalReadGuard::~GlobalReadGuard() {
+    this->unlock();
+}
+
+HGraph::GlobalReadGuard::GlobalReadGuard(GlobalReadGuard&& other) noexcept
+    : owner_(other.owner_),
+      kind_(other.kind_),
+      owns_underlying_lock_(other.owns_underlying_lock_),
+      slot_index_(other.slot_index_),
+      previous_(other.previous_) {
+    auto& top = HGraph::tls_top_read_guard();
+    if (top == &other) {
+        top = this;
+    } else {
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->previous_ == &other) {
+                guard->previous_ = this;
+                break;
+            }
+        }
+    }
+    other.owner_ = nullptr;
+    other.kind_ = Kind::kNone;
+    other.owns_underlying_lock_ = false;
+    other.previous_ = nullptr;
+}
+
+HGraph::GlobalReadGuard&
+HGraph::GlobalReadGuard::operator=(GlobalReadGuard&& other) noexcept {
+    if (this != &other) {
+        this->unlock();
+        owner_ = other.owner_;
+        kind_ = other.kind_;
+        owns_underlying_lock_ = other.owns_underlying_lock_;
+        slot_index_ = other.slot_index_;
+        previous_ = other.previous_;
+        auto& top = HGraph::tls_top_read_guard();
+        if (top == &other) {
+            top = this;
+        } else {
+            for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+                if (guard->previous_ == &other) {
+                    guard->previous_ = this;
+                    break;
+                }
+            }
+        }
+        other.owner_ = nullptr;
+        other.kind_ = Kind::kNone;
+        other.owns_underlying_lock_ = false;
+        other.previous_ = nullptr;
+    }
+    return *this;
+}
+
+void
+HGraph::GlobalReadGuard::lock() {
+    if (kind_ != Kind::kNone) {
+        return;
+    }
+    *this = GlobalReadGuard(owner_);
+}
+
+void
+HGraph::GlobalReadGuard::unlock() {
+    if (kind_ == Kind::kNone) {
+        return;
+    }
+
+    auto& top = HGraph::tls_top_read_guard();
+    if (top == this) {
+        top = previous_;
+    } else {
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->previous_ == this) {
+                guard->previous_ = previous_;
+                break;
+            }
+        }
+    }
+
+    if (owns_underlying_lock_) {
+        GlobalReadGuard* successor = nullptr;
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->owner_ == owner_) {
+                successor = guard;
+                break;
+            }
+        }
+        if (successor != nullptr) {
+            successor->owns_underlying_lock_ = true;
+        } else if (kind_ == Kind::kFast) {
+            owner_->global_lock_.FastUnlockShared(slot_index_);
+        } else {
+            owner_->global_lock_.UnlockShared();
+        }
+    }
+
+    kind_ = Kind::kNone;
+    owns_underlying_lock_ = false;
+    previous_ = nullptr;
+}
+
+HGraph::GlobalReadGuard
+HGraph::acquire_global_read_lock() const {
+    return GlobalReadGuard(this);
+}
+
 HGraph::HGraph(const HGraphParameterPtr& hgraph_param, const vsag::IndexCommonParam& common_param)
     : InnerIndexInterface(hgraph_param, common_param),
       route_graphs_(common_param.allocator_.get()),
@@ -275,8 +410,7 @@ HGraph::Tune(const std::string& parameters, bool disable_future_tuning) {
 
     // Acquire exclusive global lock to atomically swap flatten codes,
     // preventing concurrent searches from accessing partially updated state.
-    {
-        std::scoped_lock<std::shared_mutex> wlock(this->global_mutex_);
+    this->global_lock_.WithWriterCriticalSection([&]() {
         auto param = std::dynamic_pointer_cast<HGraphParameter>(create_param_ptr_);
         basic_flatten_codes_ = new_basic;
         if (drop_precise_codes) {
@@ -316,7 +450,7 @@ HGraph::Tune(const std::string& parameters, bool disable_future_tuning) {
                 create_new_raw_vector_ = false;
             }
         }
-    }
+    });
     return true;
 }
 
@@ -387,7 +521,7 @@ HGraph::generate_one_route_graph() {
 float
 HGraph::CalcDistanceById(const float* query, int64_t id, bool calculate_precise_distance) const {
     FlattenInterfacePtr flat;
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -419,7 +553,7 @@ HGraph::CalDistanceById(const float* query,
                         bool calculate_precise_distance,
                         int64_t topk) const {
     FlattenInterfacePtr flat;
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -471,7 +605,7 @@ HGraph::ExportModel(const IndexCommonParam& param) const {
 }
 void
 HGraph::GetCodeByInnerId(InnerIdType inner_id, uint8_t* data) const {
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (this->using_dedup_storage() && !this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -560,7 +694,7 @@ HGraph::Merge(const std::vector<MergeUnit>& merge_units) {
 
 void
 HGraph::GetVectorByInnerId(InnerIdType inner_id, float* data) const {
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (this->using_dedup_storage() && !this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -583,13 +717,19 @@ HGraph::SetImmutable() {
     if (this->immutable_.load(std::memory_order_acquire)) {
         return;
     }
+    std::scoped_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        return;
+    }
     std::scoped_lock<std::shared_mutex> add_lock(this->add_mutex_);
-    std::scoped_lock<std::shared_mutex> wlock(this->global_mutex_);
-    auto empty_mutex = std::make_shared<EmptyMutex>();
-    this->searcher_->SetMutexArray(empty_mutex);
-    this->parallel_searcher_->SetMutexArray(empty_mutex);
-    this->neighbors_mutex_ = empty_mutex;
-    this->immutable_.store(true, std::memory_order_release);
+    this->global_lock_.WithWriterCriticalSection([&]() {
+        auto empty_mutex = std::make_shared<EmptyMutex>();
+        this->searcher_->SetMutexArray(nullptr);
+        this->parallel_searcher_->SetMutexArray(nullptr);
+        this->neighbors_mutex_ = empty_mutex;
+        this->immutable_.store(true, std::memory_order_release);
+    });
 }
 
 void
@@ -785,7 +925,7 @@ HGraph::UpdateVector(int64_t id, const DatasetPtr& new_base, bool force_update) 
 
     // note that only modify vector need to obtain unique lock
     // and the lock has been obtained inside datacell
-    std::shared_lock<std::shared_mutex> map_lock;
+    GlobalReadGuard map_lock;
     if (this->using_dedup_storage() && !this->immutable_.load(std::memory_order_acquire)) {
         map_lock = this->acquire_global_read_lock();
     }
