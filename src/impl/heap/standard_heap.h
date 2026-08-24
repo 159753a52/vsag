@@ -15,8 +15,6 @@
 
 #pragma once
 
-#include <queue>
-
 #include "distance_heap.h"
 
 namespace vsag {
@@ -36,14 +34,7 @@ public:
     }
 
     void
-    Pop() override {
-        if constexpr (max_heap) {
-            std::pop_heap(queue_.begin(), queue_.end(), CompareMax());
-        } else {
-            std::pop_heap(queue_.begin(), queue_.end(), CompareMin());
-        }
-        queue_.pop_back();
-    }
+    Pop() override;
 
     [[nodiscard]] uint64_t
     Size() const override {

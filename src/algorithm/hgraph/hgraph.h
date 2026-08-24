@@ -48,6 +48,7 @@
 #include "storage/stream_reader.h"
 #include "storage/stream_writer.h"
 #include "typing.h"
+#include "utils/biased_rwlock.h"
 #include "utils/lock_strategy.h"
 #include "utils/util_functions.h"
 #include "utils/visited_list.h"
@@ -57,7 +58,28 @@
 namespace vsag {
 class FlattenOptimizedBuildInterface;
 class HGraphOptimizedBuildSession;
+class HGraphConcurrencyTestAccessor;
 class IteratorFilterContext;
+
+// Scalar MCI hybrid-search fields required to render search statistics.
+struct MCIHybridSearchFields {
+    MCIHybridSearchFields() = default;
+
+    MCIHybridSearchFields(float valid_ratio, float threshold, float seed_ratio)
+        : valid_ratio(valid_ratio), threshold(threshold), seed_ratio(seed_ratio) {
+    }
+
+    float valid_ratio{1.0F};
+    float threshold{0.0F};
+    float seed_ratio{0.0F};
+    std::string route{"disabled"};
+    uint64_t seed_count{0};
+    bool used_precise_float_csr{false};
+};
+
+// Render the full statistics JSON shared by the eager and deferred statistics paths.
+[[nodiscard]] JsonType
+MakeMCIStatistics(const SearchStatistics& stats, const MCIHybridSearchFields& fields);
 
 /**
  * @brief HGraph: hierarchical navigable graph index.
@@ -378,13 +400,60 @@ public:
                      DistanceRecordVector* rabitq_lower_bound_candidates = nullptr) const;
 
 private:
-    [[nodiscard]] std::shared_lock<std::shared_mutex>
-    acquire_global_read_lock() const {
-        if (not this->physical_code_resize_pending_.load(std::memory_order_acquire)) {
-            return std::shared_lock<std::shared_mutex>(this->global_mutex_);
+    // RAII guard for the reader side of global_lock_. Active guards form a
+    // thread-local stack, so recursive acquisitions find an existing grant
+    // for the same HGraph even when another HGraph is nested between them.
+    class GlobalReadGuard {
+    public:
+        GlobalReadGuard() = default;
+        explicit GlobalReadGuard(const HGraph* owner);
+        ~GlobalReadGuard();
+        GlobalReadGuard(const GlobalReadGuard&) = delete;
+        GlobalReadGuard&
+        operator=(const GlobalReadGuard&) = delete;
+        GlobalReadGuard(GlobalReadGuard&& other) noexcept;
+        GlobalReadGuard&
+        operator=(GlobalReadGuard&& other) noexcept;
+
+        [[nodiscard]] bool
+        owns_lock() const {
+            return this->kind_ != Kind::kNone;
         }
-        std::scoped_lock resize_lock(this->physical_code_resize_mutex_);
-        return std::shared_lock<std::shared_mutex>(this->global_mutex_);
+
+        [[nodiscard]] bool
+        is_fast() const {
+            return this->kind_ == Kind::kFast;
+        }
+
+        void
+        lock();
+
+        void
+        unlock();
+
+    private:
+        friend class HGraph;
+        friend class HGraphConcurrencyTestAccessor;
+        enum class Kind { kNone, kFast, kSlow };
+        const HGraph* owner_{nullptr};
+        Kind kind_{Kind::kNone};
+        bool owns_underlying_lock_{false};
+        uint32_t slot_index_{0};
+        GlobalReadGuard* previous_{nullptr};
+    };
+
+    [[nodiscard]] GlobalReadGuard
+    acquire_global_read_lock() const;
+
+    static GlobalReadGuard*&
+    tls_top_read_guard();
+
+    uint32_t
+    reader_slot_index() const {
+        static std::atomic<uint32_t> next_slot{0};
+        thread_local uint32_t slot_index =
+            next_slot.fetch_add(1, std::memory_order_relaxed) % BiasedRwLock::kReaderSlots;
+        return slot_index;
     }
 
     MetadataPtr
@@ -513,7 +582,7 @@ private:
     publish_unique_storage_if_needed(const void* data,
                                      InnerIdType inner_id,
                                      const AddContext& context,
-                                     std::shared_lock<std::shared_mutex>& read_lock);
+                                     GlobalReadGuard& read_lock);
 
     [[nodiscard]] bool
     unique_add_needs_structure_update(int level) const;
@@ -528,7 +597,7 @@ private:
                                             InnerSearchParam& param,
                                             const GraphAddProbeResult& probe,
                                             const AddContext& context,
-                                            std::shared_lock<std::shared_mutex>& read_lock);
+                                            GlobalReadGuard& read_lock);
 
     void
     publish_unique_under_unique_global_lock(const void* data,
@@ -790,19 +859,13 @@ private:
                            const FlattenInterfacePtr& flatten_codes,
                            const std::unordered_map<InnerIdType, uint32_t>& inner_id_to_input_idx);
 
-    struct MCIHybridSearchResult {
+    struct MCIHybridSearchResult : public MCIHybridSearchFields {
         MCIHybridSearchResult(const HGraphSearchParameters& params, const FilterPtr& filter);
 
         [[nodiscard]] JsonType
         MakeStatistics(const SearchStatistics& stats) const;
 
         DistHeapPtr result{nullptr};
-        float valid_ratio{1.0F};
-        float threshold{0.0F};
-        float seed_ratio{0.0F};
-        std::string route{"disabled"};
-        uint64_t seed_count{0};
-        bool used_precise_float_csr{false};
     };
 
     [[nodiscard]] MCIHybridSearchResult
@@ -867,7 +930,13 @@ private:
 
     std::shared_ptr<VisitedListPool> pool_{nullptr};  // pool of visited-lists for search
 
-    mutable std::shared_mutex global_mutex_;            // guards total_count_, entry_point_id_
+    // Reader-biased global lock guarding total_count_ / entry_point_id_ and
+    // excluding unique writers (resize, tune, remove, immutable flip) from
+    // searches and shared-mode publishes.
+    mutable BiasedRwLock global_lock_;
+    // Prevents SetImmutable() from completing while an Add() that passed the
+    // mutable-state check is still in flight.
+    mutable std::shared_mutex immutable_transition_mutex_;
     mutable std::shared_mutex persistent_codes_mutex_;  // pins flatten storage during MCI search
     mutable std::mutex mci_build_mutex_;                // serializes full MCI reconstruction
     mutable std::mutex mci_add_mutex_;                  // serializes MCI-enabled Add calls
@@ -877,6 +946,8 @@ private:
     // Single-flights physical code growth before taking the global writer lock.
     mutable std::mutex physical_code_resize_mutex_;
     std::atomic<bool> physical_code_resize_pending_{false};
+
+    friend class HGraphConcurrencyTestAccessor;
 
     std::atomic<InnerIdType> max_capacity_{0};               // allocated storage capacity
     std::atomic<CodeSlotIdType> physical_code_capacity_{0};  // physical flatten slot capacity

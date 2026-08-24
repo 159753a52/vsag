@@ -288,6 +288,13 @@ HGraph::build_by_odescent(const DatasetPtr& data) {
 
 std::vector<int64_t>
 HGraph::Add(const DatasetPtr& data) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support add");
+    }
+
     std::unique_lock<std::mutex> mci_add_lock(this->mci_add_mutex_, std::defer_lock);
     if (this->mci_parameters_.enabled) {
         mci_add_lock.lock();
@@ -577,8 +584,10 @@ HGraph::insert_one_logical_point(const void* data, const AddRow& row, const AddC
 
     if (this->unique_add_needs_structure_update(level)) {
         rlock.unlock();
-        std::scoped_lock<std::shared_mutex> wlock(this->global_mutex_);
-        this->publish_unique_under_unique_global_lock(data, level, inner_id, param, probe, context);
+        this->global_lock_.WithWriterCriticalSection([&]() {
+            this->publish_unique_under_unique_global_lock(
+                data, level, inner_id, param, probe, context);
+        });
         return true;
     }
 
@@ -637,7 +646,7 @@ void
 HGraph::publish_unique_storage_if_needed(const void* data,
                                          InnerIdType inner_id,
                                          const AddContext& context,
-                                         std::shared_lock<std::shared_mutex>& read_lock) {
+                                         GlobalReadGuard& read_lock) {
     if (not context.use_dedup_storage) {
         return;
     }
@@ -671,9 +680,15 @@ HGraph::publish_unique_under_shared_global_lock(const void* data,
                                                 InnerSearchParam& param,
                                                 const GraphAddProbeResult& probe,
                                                 const AddContext& context,
-                                                std::shared_lock<std::shared_mutex>& read_lock) {
+                                                GlobalReadGuard& read_lock) {
     this->publish_unique_storage_if_needed(data, inner_id, context, read_lock);
-    this->publish_unique_to_graphs(data, level, inner_id, param, probe, context);
+    // Graph mutation excludes lock-free readers: release this thread's read
+    // grant first (a held fast slot would deadlock the drain), then take the
+    // writer critical section. Slow-path readers stay safe through the
+    // per-node neighbor locks the publish path acquires.
+    read_lock.unlock();
+    this->global_lock_.WithWriterCriticalSection(
+        [&]() { this->publish_unique_to_graphs(data, level, inner_id, param, probe, context); });
 }
 
 void
@@ -825,8 +840,8 @@ HGraph::ensure_physical_code_capacity(CodeSlotIdType required_capacity) {
             pending.store(false, std::memory_order_release);
         }
     } pending_reset{this->physical_code_resize_pending_};
-    std::scoped_lock lock(this->global_mutex_);
-    this->ensure_physical_code_capacity_unlocked(required_capacity);
+    this->global_lock_.WithWriterCriticalSection(
+        [&]() { this->ensure_physical_code_capacity_unlocked(required_capacity); });
 }
 
 void
@@ -865,33 +880,35 @@ HGraph::resize(uint64_t new_size) {
     if (cur_size >= new_size_power_2) {
         return;
     }
-    std::scoped_lock lock(this->global_mutex_);
-    cur_size = this->max_capacity_.load();
-    if (cur_size < new_size_power_2) {
-        this->neighbors_mutex_->Resize(new_size_power_2);
-        pool_ = std::make_shared<VisitedListPool>(1, allocator_, new_size_power_2, allocator_);
-        this->label_table_->Resize(new_size_power_2);
-        bottom_graph_->Resize(new_size_power_2);
-        if (this->using_dedup_storage()) {
-            this->code_slot_map_->ReserveLogicalSize(static_cast<InnerIdType>(new_size_power_2));
-        }
-        if (not this->using_dedup_storage()) {
-            this->basic_flatten_codes_->Resize(new_size_power_2);
-            if (has_precise_reorder()) {
-                this->high_precise_codes_->Resize(new_size_power_2);
+    this->global_lock_.WithWriterCriticalSection([&]() {
+        cur_size = this->max_capacity_.load();
+        if (cur_size < new_size_power_2) {
+            this->neighbors_mutex_->Resize(new_size_power_2);
+            pool_ = std::make_shared<VisitedListPool>(1, allocator_, new_size_power_2, allocator_);
+            this->label_table_->Resize(new_size_power_2);
+            bottom_graph_->Resize(new_size_power_2);
+            if (this->using_dedup_storage()) {
+                this->code_slot_map_->ReserveLogicalSize(
+                    static_cast<InnerIdType>(new_size_power_2));
             }
-            if (create_new_raw_vector_) {
-                this->raw_vector_->Resize(new_size_power_2);
+            if (not this->using_dedup_storage()) {
+                this->basic_flatten_codes_->Resize(new_size_power_2);
+                if (has_precise_reorder()) {
+                    this->high_precise_codes_->Resize(new_size_power_2);
+                }
+                if (create_new_raw_vector_) {
+                    this->raw_vector_->Resize(new_size_power_2);
+                }
+                this->physical_code_capacity_.store(static_cast<InnerIdType>(new_size_power_2),
+                                                    std::memory_order_release);
             }
-            this->physical_code_capacity_.store(static_cast<InnerIdType>(new_size_power_2),
-                                                std::memory_order_release);
+            if (this->extra_infos_ != nullptr) {
+                this->extra_infos_->Resize(new_size_power_2);
+            }
+            this->max_capacity_.store(new_size_power_2);
+            this->cal_memory_usage();
         }
-        if (this->extra_infos_ != nullptr) {
-            this->extra_infos_->Resize(new_size_power_2);
-        }
-        this->max_capacity_.store(new_size_power_2);
-        this->cal_memory_usage();
-    }
+    });
 }
 void
 HGraph::InitFeatures() {
