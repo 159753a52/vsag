@@ -862,9 +862,6 @@ private:
     struct MCIHybridSearchResult : public MCIHybridSearchFields {
         MCIHybridSearchResult(const HGraphSearchParameters& params, const FilterPtr& filter);
 
-        [[nodiscard]] JsonType
-        MakeStatistics(const SearchStatistics& stats) const;
-
         DistHeapPtr result{nullptr};
     };
 

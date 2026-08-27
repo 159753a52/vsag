@@ -16,7 +16,6 @@
 #include "standard_heap.h"
 
 #include <algorithm>
-#include <type_traits>
 
 namespace vsag {
 template <bool max_heap, bool fixed_size>
@@ -40,33 +39,31 @@ StandardHeap<max_heap, fixed_size>::StandardHeap(Allocator* allocator, int64_t m
 template <bool max_heap, bool fixed_size>
 void
 StandardHeap<max_heap, fixed_size>::Push(float dist, InnerIdType id) {
-    using CompareType = std::conditional_t<max_heap, CompareMax, CompareMin>;
     if constexpr (fixed_size) {
         if (this->queue_.size() == this->max_size_) {
             if constexpr (max_heap) {
                 if (dist > this->queue_.front().first) {
                     return;
                 }
-            } else if (dist < this->queue_.front().first) {
-                return;
+            } else {
+                if (dist < this->queue_.front().first) {
+                    return;
+                }
             }
         }
     }
-    this->queue_.emplace_back(dist, id);
-    std::push_heap(this->queue_.begin(), this->queue_.end(), CompareType());
+    DistanceRecord record{dist, id};
+    this->queue_.emplace_back(std::move(record));
+    if constexpr (max_heap) {
+        std::push_heap(this->queue_.begin(), this->queue_.end(), CompareMax());
+    } else {
+        std::push_heap(this->queue_.begin(), this->queue_.end(), CompareMin());
+    }
     if constexpr (fixed_size) {
         if (this->queue_.size() > max_size_) {
             this->Pop();
         }
     }
-}
-
-template <bool max_heap, bool fixed_size>
-void
-StandardHeap<max_heap, fixed_size>::Pop() {
-    using CompareType = std::conditional_t<max_heap, CompareMax, CompareMin>;
-    std::pop_heap(this->queue_.begin(), this->queue_.end(), CompareType());
-    this->queue_.pop_back();
 }
 
 template class StandardHeap<true, true>;

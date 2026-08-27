@@ -81,8 +81,8 @@ TEST_CASE("SearchStatistics concurrent producers stay exact", "[ut][search_stati
         threads.emplace_back([&stats]() {
             for (uint64_t i = 0; i < kPerThread; ++i) {
                 stats.AddDistance(vsag::SearchStatistics::DistancePhase::APPROXIMATE, "fp32", 1);
-                stats.AddDistCmp(1);
-                stats.AddHops(1);
+                stats.dist_cmp.fetch_add(1, std::memory_order_relaxed);
+                stats.hops.fetch_add(1, std::memory_order_relaxed);
             }
         });
     }

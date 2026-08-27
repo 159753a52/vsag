@@ -212,16 +212,6 @@ public:
         AddDistance(phase, BackendFromName(backend), count);
     }
 
-    void
-    AddDistCmp(uint64_t count) {
-        dist_cmp.fetch_add(count, std::memory_order_relaxed);
-    }
-
-    void
-    AddHops(uint64_t count) {
-        hops.fetch_add(count, std::memory_order_relaxed);
-    }
-
     [[nodiscard]] JsonType
     ToJson() const {
         JsonType j;

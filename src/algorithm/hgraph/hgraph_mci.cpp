@@ -521,11 +521,6 @@ MakeMCIStatistics(const SearchStatistics& stats, const MCIHybridSearchFields& fi
     return json;
 }
 
-JsonType
-HGraph::MCIHybridSearchResult::MakeStatistics(const SearchStatistics& stats) const {
-    return MakeMCIStatistics(stats, *this);
-}
-
 HGraph::MCIHybridSearchResult
 HGraph::try_mci_search(const SearchRequest& request,
                        const HGraphSearchParameters& params,
