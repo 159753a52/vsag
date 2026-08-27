@@ -22,6 +22,13 @@ namespace vsag {
 
 uint32_t
 HGraph::Remove(const std::vector<int64_t>& ids, RemoveMode mode) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support remove");
+    }
+
     uint32_t delete_count = 0;
     if (mode == RemoveMode::MARK_REMOVE) {
         std::scoped_lock label_lock(this->label_lookup_mutex_);

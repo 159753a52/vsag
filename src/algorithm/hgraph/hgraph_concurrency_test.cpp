@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
 #include <future>
 #include <memory>
 #include <shared_mutex>
@@ -54,6 +55,11 @@ public:
     static std::shared_lock<std::shared_mutex>
     HoldAddLifecycle(HGraph& graph) {
         return std::shared_lock<std::shared_mutex>(graph.immutable_transition_mutex_);
+    }
+
+    static std::unique_lock<std::shared_mutex>
+    HoldImmutableTransition(HGraph& graph) {
+        return std::unique_lock<std::shared_mutex>(graph.immutable_transition_mutex_);
     }
 
     static bool
@@ -123,6 +129,39 @@ TEST_CASE("HGraph Add rechecks immutable state inside its lifecycle lock",
     try {
         graph->Add(dataset);
         FAIL("Add unexpectedly accepted an immutable HGraph");
+    } catch (const vsag::VsagException& error) {
+        REQUIRE(error.error_.type == vsag::ErrorType::UNSUPPORTED_INDEX_OPERATION);
+    }
+}
+
+TEST_CASE("HGraph Remove participates in the immutable transition lifecycle",
+          "[ut][hgraph][concurrency][immutable]") {
+    auto graph = MakeHGraph();
+    auto transition = vsag::HGraphConcurrencyTestAccessor::HoldImmutableTransition(*graph);
+    auto remove = std::async(std::launch::async, [&]() {
+        return graph->Remove({}, vsag::RemoveMode::MARK_REMOVE);
+    });
+
+    REQUIRE(remove.wait_for(std::chrono::milliseconds(50)) == std::future_status::timeout);
+    transition.unlock();
+    REQUIRE(remove.get() == 0);
+}
+
+TEST_CASE("HGraph mutation entrypoints reject an immutable graph",
+          "[ut][hgraph][concurrency][immutable]") {
+    auto graph = MakeHGraph();
+    graph->SetImmutable();
+
+    try {
+        graph->Remove({}, vsag::RemoveMode::MARK_REMOVE);
+        FAIL("Remove unexpectedly accepted an immutable HGraph");
+    } catch (const vsag::VsagException& error) {
+        REQUIRE(error.error_.type == vsag::ErrorType::UNSUPPORTED_INDEX_OPERATION);
+    }
+
+    try {
+        graph->UpdateVector(0, nullptr, true);
+        FAIL("UpdateVector unexpectedly accepted an immutable HGraph");
     } catch (const vsag::VsagException& error) {
         REQUIRE(error.error_.type == vsag::ErrorType::UNSUPPORTED_INDEX_OPERATION);
     }
