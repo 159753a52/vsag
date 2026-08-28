@@ -139,6 +139,12 @@ HGraph::train_codes_with_dataset(const DatasetPtr& train_data) {
 
 std::vector<int64_t>
 HGraph::Build(const DatasetPtr& data) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support build");
+    }
     CHECK_ARGUMENT(GetNumElements() == 0, "index is not empty");
     this->build_cache_hit_rate_ = -1.0F;
     this->build_cache_hit_nodes_ = 0;
@@ -159,7 +165,7 @@ HGraph::Build(const DatasetPtr& data) {
         if (optimized_result.has_value()) {
             ret = std::move(optimized_result.value());
         } else if (graph_type_ == GRAPH_TYPE_VALUE_NSW) {
-            ret = this->Add(data);
+            ret = this->add_without_transition_lock(data);
         } else {
             ret = this->build_by_odescent(data);
         }
@@ -295,6 +301,11 @@ HGraph::Add(const DatasetPtr& data) {
                             "immutable index no support add");
     }
 
+    return this->add_without_transition_lock(data);
+}
+
+std::vector<int64_t>
+HGraph::add_without_transition_lock(const DatasetPtr& data) {
     std::unique_lock<std::mutex> mci_add_lock(this->mci_add_mutex_, std::defer_lock);
     if (this->mci_parameters_.enabled) {
         mci_add_lock.lock();

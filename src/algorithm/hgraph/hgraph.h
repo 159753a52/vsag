@@ -405,6 +405,10 @@ public:
                      DistanceRecordVector* rabitq_lower_bound_candidates = nullptr) const;
 
 private:
+    // Shared implementation for Add() and Build(); caller holds immutable_transition_mutex_.
+    std::vector<int64_t>
+    add_without_transition_lock(const DatasetPtr& data);
+
     // RAII guard for the reader side of global_lock_. Active guards form a
     // thread-local stack, so recursive acquisitions find an existing grant
     // for the same HGraph even when another HGraph is nested between them.
@@ -422,12 +426,12 @@ private:
 
         [[nodiscard]] bool
         owns_lock() const {
-            return this->kind_ != Kind::kNone;
+            return this->read_path_ != ReadPath::kNone;
         }
 
         [[nodiscard]] bool
         is_fast() const {
-            return this->kind_ == Kind::kFast;
+            return this->read_path_ == ReadPath::kFast;
         }
 
         void
@@ -438,11 +442,11 @@ private:
 
     private:
         friend class HGraph;
-        enum class Kind { kNone, kFast, kSlow };
-        const HGraph* owner_{nullptr};
-        Kind kind_{Kind::kNone};
-        bool owns_underlying_lock_{false};
-        uint32_t slot_index_{0};
+        enum class ReadPath { kNone, kFast, kSlow };
+        const HGraph* hgraph_{nullptr};
+        ReadPath read_path_{ReadPath::kNone};
+        bool owns_read_grant_{false};
+        uint32_t reader_slot_index_{0};
         GlobalReadGuard* previous_{nullptr};
     };
 

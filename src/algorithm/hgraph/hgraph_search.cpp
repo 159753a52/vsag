@@ -115,12 +115,12 @@ HGraph::KnnSearch(const DatasetPtr& query,
         fmt::format("ef_search({}) must be at least 1", params.ef_search));
 
     std::shared_lock<std::shared_mutex> force_remove_rlock;
-    GlobalReadGuard shared_lock;
+    GlobalReadGuard global_read_guard;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         if (this->support_force_remove()) {
             force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
         }
-        shared_lock = this->acquire_global_read_lock();
+        global_read_guard = this->acquire_global_read_lock();
     }
     k = std::min(k, GetNumElements());
 
@@ -165,7 +165,7 @@ HGraph::KnnSearch(const DatasetPtr& query,
             search_param.ef = 1;
             search_param.is_inner_id_allowed = nullptr;
             search_param.enable_rabitq_one_bit_search = params.rabitq_one_bit_search;
-            search_param.skip_neighbor_locks = shared_lock.is_fast();
+            search_param.skip_neighbor_locks = global_read_guard.is_fast();
             if (search_param.ep == INVALID_ENTRY_POINT) {
                 return make_empty_dataset_with_stats();
             }
@@ -486,12 +486,12 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         fmt::format("ef_search({}) must be at least 1", params.ef_search));
 
     std::shared_lock<std::shared_mutex> force_remove_rlock;
-    GlobalReadGuard shared_lock;
+    GlobalReadGuard global_read_guard;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         if (this->support_force_remove()) {
             force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
         }
-        shared_lock = this->acquire_global_read_lock();
+        global_read_guard = this->acquire_global_read_lock();
     }
     const auto element_count = GetNumElements();
     if (element_count == 0) {
@@ -551,7 +551,7 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
     search_param.ep = this->entry_point_id_;
     // Fast-path readers are excluded from concurrent graph mutations by the
     // biased lock's writer drain, so per-node neighbor locks can be skipped.
-    search_param.skip_neighbor_locks = shared_lock.is_fast();
+    search_param.skip_neighbor_locks = global_read_guard.is_fast();
     search_param.topk = 1;
     search_param.ef = 1;
     search_param.is_inner_id_allowed = nullptr;

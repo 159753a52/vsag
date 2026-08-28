@@ -25,22 +25,22 @@ namespace vsag {
 // Reader-biased read/write indicator built from two primitives:
 //
 //   fast path (readers): one seq_cst fetch_add on a per-thread padded slot,
-//   then one seq_cst load of writer_pending_. Readers hold no shared cache
+//   then one seq_cst load of pending_writer_count_. Readers hold no shared cache
 //   line, so N concurrent readers never invalidate each other -- unlike a
 //   pthread rwlock whose reader count sits on one hot line.
 //
 //   slow path: when a writer is pending, readers fall back to an underlying
 //   std::shared_mutex, preserving classic exclusion semantics.
 //
-//   writers: serialize on the same std::shared_mutex (unique), set
-//   writer_pending_, drain every reader slot, run the critical section, clear
-//   the flag. In-flight fast-path readers finish without touching any lock,
-//   so the drain is bounded by one search duration and cannot deadlock.
+//   writers: mark a writer as pending, serialize on the same std::shared_mutex
+//   (unique), drain every reader slot, run the critical section, then clear the
+//   pending count. In-flight fast-path readers finish without touching any
+//   lock, so the drain is bounded by one search duration and cannot deadlock.
 //
 // Correctness of the handoff uses the seq_cst total order: a reader that
-// observed writer_pending_ == false ordered its slot increment before the
-// writer's store in that order, so the writer's subsequent scan must observe
-// the nonzero slot and wait for it.
+// observed pending_writer_count_ == 0 ordered its slot increment before the writer's
+// increment in that order, so the writer's subsequent scan must observe the
+// nonzero slot and wait for it.
 class BiasedRwLock {
 public:
     static constexpr uint32_t kReaderSlots = 128;
@@ -54,11 +54,11 @@ public:
     operator=(const BiasedRwLock&) = delete;
 
     [[nodiscard]] SharedLockKind
-    LockShared(uint32_t slot_index) {
-        auto& slot = reader_slots_[slot_index].count;
-        if (!writer_pending_.load(std::memory_order_relaxed)) {
+    LockShared(uint32_t reader_slot_index) {
+        auto& slot = reader_slots_[reader_slot_index].count;
+        if (pending_writer_count_.load(std::memory_order_relaxed) == 0) {
             slot.fetch_add(1, std::memory_order_seq_cst);
-            if (!writer_pending_.load(std::memory_order_seq_cst)) {
+            if (pending_writer_count_.load(std::memory_order_seq_cst) == 0) {
                 return SharedLockKind::kFast;
             }
             slot.fetch_sub(1, std::memory_order_release);
@@ -68,8 +68,8 @@ public:
     }
 
     void
-    FastUnlockShared(uint32_t slot_index) {
-        reader_slots_[slot_index].count.fetch_sub(1, std::memory_order_release);
+    FastUnlockShared(uint32_t reader_slot_index) {
+        reader_slots_[reader_slot_index].count.fetch_sub(1, std::memory_order_release);
     }
 
     void
@@ -82,8 +82,7 @@ public:
     template <typename CriticalSection>
     void
     WithWriterCriticalSection(CriticalSection&& critical) {
-        std::unique_lock<std::shared_mutex> exclusive(mutex_);
-        WriterPendingGuard pending_guard(writer_pending_, exclusive);
+        PendingWriterLockGuard pending_writer_lock(pending_writer_count_, mutex_);
         for (auto& slot : reader_slots_) {
             while (slot.count.load(std::memory_order_seq_cst) != 0) {
                 std::this_thread::yield();
@@ -93,39 +92,46 @@ public:
     }
 
 private:
-    class WriterPendingGuard {
+    class PendingWriterLockGuard {
     public:
-        WriterPendingGuard(std::atomic<bool>& writer_pending,
-                           std::unique_lock<std::shared_mutex>& exclusive)
-            : writer_pending_(writer_pending), exclusive_(exclusive) {
-            writer_pending_.store(true, std::memory_order_seq_cst);
+        PendingWriterLockGuard(std::atomic<uint32_t>& pending_writer_count,
+                               std::shared_mutex& mutex)
+            : pending_writer_count_(pending_writer_count) {
+            pending_writer_count_.fetch_add(1, std::memory_order_seq_cst);
+            try {
+                exclusive_ = std::unique_lock<std::shared_mutex>(mutex);
+            } catch (...) {
+                pending_writer_count_.fetch_sub(1, std::memory_order_seq_cst);
+                throw;
+            }
         }
 
-        ~WriterPendingGuard() {
-            // Keep pending=true until the exclusive lock is released. Otherwise a new
-            // reader could enter the fast path while the writer is still in its section.
+        ~PendingWriterLockGuard() {
+            // Keep the pending count nonzero until the exclusive lock is released. A
+            // count (rather than a bool) also prevents one writer from clearing the
+            // flag while another writer is already waiting on the mutex.
             if (exclusive_.owns_lock()) {
                 exclusive_.unlock();
             }
-            writer_pending_.store(false, std::memory_order_release);
+            pending_writer_count_.fetch_sub(1, std::memory_order_seq_cst);
         }
 
-        WriterPendingGuard(const WriterPendingGuard&) = delete;
-        WriterPendingGuard&
-        operator=(const WriterPendingGuard&) = delete;
+        PendingWriterLockGuard(const PendingWriterLockGuard&) = delete;
+        PendingWriterLockGuard&
+        operator=(const PendingWriterLockGuard&) = delete;
 
     private:
-        std::atomic<bool>& writer_pending_;
-        std::unique_lock<std::shared_mutex>& exclusive_;
+        std::atomic<uint32_t>& pending_writer_count_;
+        std::unique_lock<std::shared_mutex> exclusive_;
     };
 
-    struct alignas(64) Slot {
+    struct alignas(64) ReaderSlot {
         std::atomic<uint32_t> count{0};
     };
 
     std::shared_mutex mutex_;
-    Slot reader_slots_[kReaderSlots];
-    std::atomic<bool> writer_pending_{false};
+    ReaderSlot reader_slots_[kReaderSlots];
+    std::atomic<uint32_t> pending_writer_count_{0};
 };
 
 }  // namespace vsag

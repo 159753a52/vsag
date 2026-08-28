@@ -17,6 +17,8 @@
 #include <datacell/compressed_graph_datacell_parameter.h>
 #include <fmt/format.h>
 
+#include <algorithm>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -53,23 +55,24 @@ HGraph::tls_top_read_guard() {
     return top;
 }
 
-HGraph::GlobalReadGuard::GlobalReadGuard(const HGraph* owner) {
-    owner_ = owner;
+HGraph::GlobalReadGuard::GlobalReadGuard(const HGraph* hgraph) {
+    hgraph_ = hgraph;
     auto& top = HGraph::tls_top_read_guard();
     for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
-        if (guard->owner_ == owner) {
-            kind_ = guard->kind_;
-            slot_index_ = guard->slot_index_;
+        if (guard->hgraph_ == hgraph) {
+            read_path_ = guard->read_path_;
+            reader_slot_index_ = guard->reader_slot_index_;
             previous_ = top;
             top = this;
             return;
         }
     }
 
-    slot_index_ = owner->reader_slot_index();
-    const auto lock_kind = owner->global_lock_.LockShared(slot_index_);
-    kind_ = (lock_kind == BiasedRwLock::SharedLockKind::kFast) ? Kind::kFast : Kind::kSlow;
-    owns_underlying_lock_ = true;
+    reader_slot_index_ = hgraph->reader_slot_index();
+    const auto lock_kind = hgraph->global_lock_.LockShared(reader_slot_index_);
+    read_path_ =
+        (lock_kind == BiasedRwLock::SharedLockKind::kFast) ? ReadPath::kFast : ReadPath::kSlow;
+    owns_read_grant_ = true;
     previous_ = top;
     top = this;
 }
@@ -79,10 +82,10 @@ HGraph::GlobalReadGuard::~GlobalReadGuard() {
 }
 
 HGraph::GlobalReadGuard::GlobalReadGuard(GlobalReadGuard&& other) noexcept
-    : owner_(other.owner_),
-      kind_(other.kind_),
-      owns_underlying_lock_(other.owns_underlying_lock_),
-      slot_index_(other.slot_index_),
+    : hgraph_(other.hgraph_),
+      read_path_(other.read_path_),
+      owns_read_grant_(other.owns_read_grant_),
+      reader_slot_index_(other.reader_slot_index_),
       previous_(other.previous_) {
     auto& top = HGraph::tls_top_read_guard();
     if (top == &other) {
@@ -95,9 +98,9 @@ HGraph::GlobalReadGuard::GlobalReadGuard(GlobalReadGuard&& other) noexcept
             }
         }
     }
-    other.owner_ = nullptr;
-    other.kind_ = Kind::kNone;
-    other.owns_underlying_lock_ = false;
+    other.hgraph_ = nullptr;
+    other.read_path_ = ReadPath::kNone;
+    other.owns_read_grant_ = false;
     other.previous_ = nullptr;
 }
 
@@ -105,10 +108,10 @@ HGraph::GlobalReadGuard&
 HGraph::GlobalReadGuard::operator=(GlobalReadGuard&& other) noexcept {
     if (this != &other) {
         this->unlock();
-        owner_ = other.owner_;
-        kind_ = other.kind_;
-        owns_underlying_lock_ = other.owns_underlying_lock_;
-        slot_index_ = other.slot_index_;
+        hgraph_ = other.hgraph_;
+        read_path_ = other.read_path_;
+        owns_read_grant_ = other.owns_read_grant_;
+        reader_slot_index_ = other.reader_slot_index_;
         previous_ = other.previous_;
         auto& top = HGraph::tls_top_read_guard();
         if (top == &other) {
@@ -121,9 +124,9 @@ HGraph::GlobalReadGuard::operator=(GlobalReadGuard&& other) noexcept {
                 }
             }
         }
-        other.owner_ = nullptr;
-        other.kind_ = Kind::kNone;
-        other.owns_underlying_lock_ = false;
+        other.hgraph_ = nullptr;
+        other.read_path_ = ReadPath::kNone;
+        other.owns_read_grant_ = false;
         other.previous_ = nullptr;
     }
     return *this;
@@ -131,15 +134,16 @@ HGraph::GlobalReadGuard::operator=(GlobalReadGuard&& other) noexcept {
 
 void
 HGraph::GlobalReadGuard::lock() {
-    if (kind_ != Kind::kNone) {
+    if (read_path_ != ReadPath::kNone) {
         return;
     }
-    *this = GlobalReadGuard(owner_);
+    CHECK_ARGUMENT(hgraph_ != nullptr, "GlobalReadGuard requires an HGraph owner");
+    *this = GlobalReadGuard(hgraph_);
 }
 
 void
 HGraph::GlobalReadGuard::unlock() {
-    if (kind_ == Kind::kNone) {
+    if (read_path_ == ReadPath::kNone) {
         return;
     }
 
@@ -155,25 +159,25 @@ HGraph::GlobalReadGuard::unlock() {
         }
     }
 
-    if (owns_underlying_lock_) {
+    if (owns_read_grant_) {
         GlobalReadGuard* successor = nullptr;
         for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
-            if (guard->owner_ == owner_) {
+            if (guard->hgraph_ == hgraph_) {
                 successor = guard;
                 break;
             }
         }
         if (successor != nullptr) {
-            successor->owns_underlying_lock_ = true;
-        } else if (kind_ == Kind::kFast) {
-            owner_->global_lock_.FastUnlockShared(slot_index_);
+            successor->owns_read_grant_ = true;
+        } else if (read_path_ == ReadPath::kFast) {
+            hgraph_->global_lock_.FastUnlockShared(reader_slot_index_);
         } else {
-            owner_->global_lock_.UnlockShared();
+            hgraph_->global_lock_.UnlockShared();
         }
     }
 
-    kind_ = Kind::kNone;
-    owns_underlying_lock_ = false;
+    read_path_ = ReadPath::kNone;
+    owns_read_grant_ = false;
     previous_ = nullptr;
 }
 
@@ -627,8 +631,34 @@ void
 HGraph::Merge(const std::vector<MergeUnit>& merge_units) {
     CHECK_ARGUMENT(not this->using_dedup_storage(),
                    "HGraph deduplicate_storage does not support Merge");
-    std::shared_lock<std::shared_mutex> immutable_transition_lock(
-        this->immutable_transition_mutex_);
+    std::vector<std::shared_ptr<HGraph>> source_indices;
+    source_indices.reserve(merge_units.size());
+    for (const auto& unit : merge_units) {
+        const auto source_index_impl = std::dynamic_pointer_cast<IndexImpl<HGraph>>(unit.index);
+        CHECK_ARGUMENT(source_index_impl != nullptr, "HGraph Merge requires HGraph source indexes");
+        const auto source_index =
+            std::dynamic_pointer_cast<HGraph>(source_index_impl->GetInnerIndex());
+        CHECK_ARGUMENT(source_index != nullptr, "HGraph Merge requires HGraph source indexes");
+        CHECK_ARGUMENT(source_index.get() != this, "HGraph Merge cannot use itself as a source");
+        source_indices.emplace_back(source_index);
+    }
+
+    std::vector<HGraph*> participating_indices;
+    participating_indices.reserve(source_indices.size() + 1);
+    participating_indices.emplace_back(this);
+    for (const auto& source_index : source_indices) {
+        participating_indices.emplace_back(source_index.get());
+    }
+    std::sort(participating_indices.begin(), participating_indices.end(), std::less<HGraph*>());
+    participating_indices.erase(
+        std::unique(participating_indices.begin(), participating_indices.end()),
+        participating_indices.end());
+    std::vector<std::unique_lock<std::shared_mutex>> immutable_transition_locks;
+    immutable_transition_locks.reserve(participating_indices.size());
+    for (auto* index : participating_indices) {
+        immutable_transition_locks.emplace_back(index->immutable_transition_mutex_);
+    }
+
     if (this->immutable_.load(std::memory_order_acquire)) {
         throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
                             "immutable index no support merge");
@@ -642,21 +672,14 @@ HGraph::Merge(const std::vector<MergeUnit>& merge_units) {
         force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
     }
     std::unique_lock<std::shared_mutex> add_lock(this->add_mutex_);
-    std::vector<std::shared_ptr<HGraph>> source_indices;
-    source_indices.reserve(merge_units.size());
+
     int64_t total_count = this->GetNumElements();
-    for (const auto& unit : merge_units) {
-        const auto source_index_impl = std::dynamic_pointer_cast<IndexImpl<HGraph>>(unit.index);
-        CHECK_ARGUMENT(source_index_impl != nullptr, "HGraph Merge requires HGraph source indexes");
-        const auto source_index =
-            std::dynamic_pointer_cast<HGraph>(source_index_impl->GetInnerIndex());
-        CHECK_ARGUMENT(source_index != nullptr, "HGraph Merge requires HGraph source indexes");
+    for (const auto& source_index : source_indices) {
         CHECK_ARGUMENT(this->support_duplicate_ == source_index->support_duplicate_,
                        "cannot merge HGraph with different support_duplicate settings");
         CHECK_ARGUMENT(not source_index->using_dedup_storage(),
                        "HGraph deduplicate_storage does not support Merge");
         total_count += source_index->GetNumElements();
-        source_indices.emplace_back(source_index);
     }
     if (max_capacity_ < total_count) {
         this->resize(total_count);
