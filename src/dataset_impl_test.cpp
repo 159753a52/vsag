@@ -43,7 +43,9 @@ TEST_CASE("Dataset Lazy Statistics Move Test", "[ut][dataset]") {
     auto dataset = vsag::DatasetImpl::MakeEmptyDataset();
     vsag::DatasetImpl::Statistics(dataset, lazy_stats);
 
-    vsag::DatasetImpl moved(std::move(*dataset));
+    auto* dataset_impl = dynamic_cast<vsag::DatasetImpl*>(dataset.get());
+    REQUIRE(dataset_impl != nullptr);
+    vsag::DatasetImpl moved(std::move(*dataset_impl));
 
     CHECK(moved.GetStatistics() == R"({"dist_cmp":42,"hops":7})");
     CHECK(lazy_stats->calls == 1);
