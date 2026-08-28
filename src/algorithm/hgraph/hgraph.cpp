@@ -47,6 +47,143 @@ namespace vsag {
 
 class HGraphAnalyzer;
 
+HGraph::GlobalReadGuard*&
+HGraph::tls_top_read_guard() {
+    static thread_local GlobalReadGuard* top = nullptr;
+    return top;
+}
+
+HGraph::GlobalReadGuard::GlobalReadGuard(const HGraph* hgraph) {
+    hgraph_ = hgraph;
+    auto& top = HGraph::tls_top_read_guard();
+    for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+        if (guard->hgraph_ == hgraph) {
+            read_path_ = guard->read_path_;
+            reader_slot_index_ = guard->reader_slot_index_;
+            previous_ = top;
+            top = this;
+            return;
+        }
+    }
+
+    reader_slot_index_ = hgraph->reader_slot_index();
+    const auto lock_kind = hgraph->global_lock_.LockShared(reader_slot_index_);
+    read_path_ =
+        (lock_kind == BiasedRwLock::SharedLockKind::kFast) ? ReadPath::kFast : ReadPath::kSlow;
+    owns_read_grant_ = true;
+    previous_ = top;
+    top = this;
+}
+
+HGraph::GlobalReadGuard::~GlobalReadGuard() {
+    this->unlock();
+}
+
+HGraph::GlobalReadGuard::GlobalReadGuard(GlobalReadGuard&& other) noexcept
+    : hgraph_(other.hgraph_),
+      read_path_(other.read_path_),
+      owns_read_grant_(other.owns_read_grant_),
+      reader_slot_index_(other.reader_slot_index_),
+      previous_(other.previous_) {
+    auto& top = HGraph::tls_top_read_guard();
+    if (top == &other) {
+        top = this;
+    } else {
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->previous_ == &other) {
+                guard->previous_ = this;
+                break;
+            }
+        }
+    }
+    other.hgraph_ = nullptr;
+    other.read_path_ = ReadPath::kNone;
+    other.owns_read_grant_ = false;
+    other.previous_ = nullptr;
+}
+
+HGraph::GlobalReadGuard&
+HGraph::GlobalReadGuard::operator=(GlobalReadGuard&& other) noexcept {
+    if (this != &other) {
+        this->unlock();
+        hgraph_ = other.hgraph_;
+        read_path_ = other.read_path_;
+        owns_read_grant_ = other.owns_read_grant_;
+        reader_slot_index_ = other.reader_slot_index_;
+        previous_ = other.previous_;
+        auto& top = HGraph::tls_top_read_guard();
+        if (top == &other) {
+            top = this;
+        } else {
+            for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+                if (guard->previous_ == &other) {
+                    guard->previous_ = this;
+                    break;
+                }
+            }
+        }
+        other.hgraph_ = nullptr;
+        other.read_path_ = ReadPath::kNone;
+        other.owns_read_grant_ = false;
+        other.previous_ = nullptr;
+    }
+    return *this;
+}
+
+void
+HGraph::GlobalReadGuard::lock() {
+    if (read_path_ != ReadPath::kNone) {
+        return;
+    }
+    CHECK_ARGUMENT(hgraph_ != nullptr, "GlobalReadGuard requires an HGraph owner");
+    *this = GlobalReadGuard(hgraph_);
+}
+
+void
+HGraph::GlobalReadGuard::unlock() {
+    if (read_path_ == ReadPath::kNone) {
+        return;
+    }
+
+    auto& top = HGraph::tls_top_read_guard();
+    if (top == this) {
+        top = previous_;
+    } else {
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->previous_ == this) {
+                guard->previous_ = previous_;
+                break;
+            }
+        }
+    }
+
+    if (owns_read_grant_) {
+        GlobalReadGuard* successor = nullptr;
+        for (auto* guard = top; guard != nullptr; guard = guard->previous_) {
+            if (guard->hgraph_ == hgraph_) {
+                successor = guard;
+                break;
+            }
+        }
+        if (successor != nullptr) {
+            successor->owns_read_grant_ = true;
+        } else if (read_path_ == ReadPath::kFast) {
+            hgraph_->global_lock_.FastUnlockShared(reader_slot_index_);
+        } else {
+            hgraph_->global_lock_.UnlockShared();
+        }
+    }
+
+    read_path_ = ReadPath::kNone;
+    owns_read_grant_ = false;
+    previous_ = nullptr;
+}
+
+HGraph::GlobalReadGuard
+HGraph::acquire_global_read_lock() const {
+    return GlobalReadGuard(this);
+}
+
 HGraph::HGraph(const HGraphParameterPtr& hgraph_param, const vsag::IndexCommonParam& common_param)
     : InnerIndexInterface(hgraph_param, common_param),
       route_graphs_(common_param.allocator_.get()),
@@ -132,6 +269,8 @@ HGraph::HGraph(const HGraphParameterPtr& hgraph_param, const vsag::IndexCommonPa
 
 bool
 HGraph::Tune(const std::string& parameters, bool disable_future_tuning) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
     std::scoped_lock lock(this->add_mutex_);
     if (this->immutable_.load(std::memory_order_acquire) or
         not this->index_feature_list_->CheckFeature(IndexFeature::SUPPORT_TUNE)) {
@@ -275,8 +414,7 @@ HGraph::Tune(const std::string& parameters, bool disable_future_tuning) {
 
     // Acquire exclusive global lock to atomically swap flatten codes,
     // preventing concurrent searches from accessing partially updated state.
-    {
-        std::scoped_lock<std::shared_mutex> wlock(this->global_mutex_);
+    this->global_lock_.WithWriterCriticalSection([&]() {
         auto param = std::dynamic_pointer_cast<HGraphParameter>(create_param_ptr_);
         basic_flatten_codes_ = new_basic;
         if (drop_precise_codes) {
@@ -316,7 +454,7 @@ HGraph::Tune(const std::string& parameters, bool disable_future_tuning) {
                 create_new_raw_vector_ = false;
             }
         }
-    }
+    });
     return true;
 }
 
@@ -387,7 +525,7 @@ HGraph::generate_one_route_graph() {
 float
 HGraph::CalcDistanceById(const float* query, int64_t id, bool calculate_precise_distance) const {
     FlattenInterfacePtr flat;
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -419,7 +557,7 @@ HGraph::CalDistanceById(const float* query,
                         bool calculate_precise_distance,
                         int64_t topk) const {
     FlattenInterfacePtr flat;
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (!this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -471,7 +609,7 @@ HGraph::ExportModel(const IndexCommonParam& param) const {
 }
 void
 HGraph::GetCodeByInnerId(InnerIdType inner_id, uint8_t* data) const {
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (this->using_dedup_storage() && !this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -491,6 +629,17 @@ void
 HGraph::Merge(const std::vector<MergeUnit>& merge_units) {
     CHECK_ARGUMENT(not this->using_dedup_storage(),
                    "HGraph deduplicate_storage does not support Merge");
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    std::unique_lock<std::mutex> mci_add_lock(this->mci_add_mutex_, std::defer_lock);
+    if (this->mci_parameters_.enabled) {
+        mci_add_lock.lock();
+    }
+    std::shared_lock<std::shared_mutex> force_remove_rlock;
+    if (this->support_force_remove()) {
+        force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
+    }
+    std::unique_lock<std::shared_mutex> add_lock(this->add_mutex_);
     int64_t total_count = this->GetNumElements();
     for (const auto& unit : merge_units) {
         total_count += unit.index->GetNumElements();
@@ -498,61 +647,63 @@ HGraph::Merge(const std::vector<MergeUnit>& merge_units) {
     if (max_capacity_ < total_count) {
         this->resize(total_count);
     }
-    for (const auto& merge_unit : merge_units) {
-        const auto other_index = std::dynamic_pointer_cast<HGraph>(
-            std::dynamic_pointer_cast<IndexImpl<HGraph>>(merge_unit.index)->GetInnerIndex());
-        CHECK_ARGUMENT(this->support_duplicate_ == other_index->support_duplicate_,
+    this->global_lock_.WithWriterCriticalSection([&]() {
+        for (const auto& merge_unit : merge_units) {
+            const auto other_index = std::dynamic_pointer_cast<HGraph>(
+                std::dynamic_pointer_cast<IndexImpl<HGraph>>(merge_unit.index)->GetInnerIndex());
+            CHECK_ARGUMENT(this->support_duplicate_ == other_index->support_duplicate_,
                        "cannot merge HGraph with different support_duplicate settings");
-        CHECK_ARGUMENT(not other_index->using_dedup_storage(),
-                       "HGraph deduplicate_storage does not support Merge");
+            CHECK_ARGUMENT(not other_index->using_dedup_storage(),
+                           "HGraph deduplicate_storage does not support Merge");
 
-        auto logical_bias = this->total_count_.load(std::memory_order_acquire);
-        if (total_count_ == 0) {
-            this->entry_point_id_ = other_index->entry_point_id_;
+            auto logical_bias = this->total_count_.load(std::memory_order_acquire);
+            if (total_count == 0) {
+                this->entry_point_id_ = other_index->entry_point_id_;
+            }
+            basic_flatten_codes_->MergeOther(other_index->basic_flatten_codes_, logical_bias);
+            label_table_->MergeOther(other_index->label_table_, merge_unit.id_map_func);
+            if (has_precise_reorder()) {
+                high_precise_codes_->MergeOther(other_index->high_precise_codes_, logical_bias);
+            }
+            bottom_graph_->MergeOther(other_index->bottom_graph_, logical_bias);
+            if (route_graphs_.size() < other_index->route_graphs_.size()) {
+                route_graphs_.push_back(this->generate_one_route_graph());
+            }
+            for (int j = 0; j < std::min(other_index->route_graphs_.size(), route_graphs_.size());
+                 ++j) {
+                route_graphs_[j]->MergeOther(other_index->route_graphs_[j], logical_bias);
+            }
+            this->total_count_ += other_index->GetNumElements();
         }
-        basic_flatten_codes_->MergeOther(other_index->basic_flatten_codes_, logical_bias);
-        label_table_->MergeOther(other_index->label_table_, merge_unit.id_map_func);
-        if (has_precise_reorder()) {
-            high_precise_codes_->MergeOther(other_index->high_precise_codes_, logical_bias);
+        if (this->odescent_param_ == nullptr) {
+            odescent_param_ = std::make_shared<ODescentParameter>();
         }
-        bottom_graph_->MergeOther(other_index->bottom_graph_, logical_bias);
-        if (route_graphs_.size() < other_index->route_graphs_.size()) {
-            route_graphs_.push_back(this->generate_one_route_graph());
-        }
-        for (int j = 0; j < std::min(other_index->route_graphs_.size(), route_graphs_.size());
-             ++j) {
-            route_graphs_[j]->MergeOther(other_index->route_graphs_[j], logical_bias);
-        }
-        this->total_count_ += other_index->GetNumElements();
-    }
-    if (this->odescent_param_ == nullptr) {
-        odescent_param_ = std::make_shared<ODescentParameter>();
-    }
 
-    auto build_data = (has_precise_reorder() and not build_by_base_) ? this->high_precise_codes_
-                                                                     : this->basic_flatten_codes_;
-    for (InnerIdType inner_id = 0; inner_id < this->total_count_; ++inner_id) {
-        Vector<InnerIdType> neighbors(this->allocator_);
-        this->bottom_graph_->GetNeighbors(inner_id, neighbors);
-        neighbors.resize(neighbors.size() / 2);
-        this->bottom_graph_->InsertNeighborsById(inner_id, neighbors);
-    }
-    {
-        odescent_param_->max_degree = bottom_graph_->MaximumDegree();
-        ODescent odescent_builder(
-            odescent_param_, build_data, allocator_, this->thread_pool_.get());
-        odescent_builder.Build(bottom_graph_);
-        odescent_builder.SaveGraph(bottom_graph_);
-    }
-    for (auto& graph : route_graphs_) {
-        odescent_param_->max_degree = bottom_graph_->MaximumDegree() / 2;
-        ODescent sparse_odescent_builder(
-            odescent_param_, build_data, allocator_, this->thread_pool_.get());
-        auto ids = graph->GetIds();
-        sparse_odescent_builder.Build(ids, graph);
-        sparse_odescent_builder.SaveGraph(graph);
-        this->entry_point_id_ = ids.back();
-    }
+        auto build_data = (has_precise_reorder() and not build_by_base_) ? this->high_precise_codes_
+                                                                         : this->basic_flatten_codes_;
+        for (InnerIdType inner_id = 0; inner_id < this->total_count_; ++inner_id) {
+            Vector<InnerIdType> neighbors(this->allocator_);
+            this->bottom_graph_->GetNeighbors(inner_id, neighbors);
+            neighbors.resize(neighbors.size() / 2);
+            this->bottom_graph_->InsertNeighborsById(inner_id, neighbors);
+        }
+        {
+            odescent_param_->max_degree = bottom_graph_->MaximumDegree();
+            ODescent odescent_builder(
+                odescent_param_, build_data, allocator_, this->thread_pool_.get());
+            odescent_builder.Build(bottom_graph_);
+            odescent_builder.SaveGraph(bottom_graph_);
+        }
+        for (auto& graph : route_graphs_) {
+            odescent_param_->max_degree = bottom_graph_->MaximumDegree() / 2;
+            ODescent sparse_odescent_builder(
+                odescent_param_, build_data, allocator_, this->thread_pool_.get());
+            auto ids = graph->GetIds();
+            sparse_odescent_builder.Build(ids, graph);
+            sparse_odescent_builder.SaveGraph(graph);
+            this->entry_point_id_ = ids.back();
+        }
+    });
     if (this->mci_parameters_.enabled) {
         this->build_mci_clique_index();
     }
@@ -560,7 +711,7 @@ HGraph::Merge(const std::vector<MergeUnit>& merge_units) {
 
 void
 HGraph::GetVectorByInnerId(InnerIdType inner_id, float* data) const {
-    std::shared_lock<std::shared_mutex> lock;
+    GlobalReadGuard lock;
     if (this->using_dedup_storage() && !this->immutable_.load(std::memory_order_acquire)) {
         lock = this->acquire_global_read_lock();
     }
@@ -583,13 +734,19 @@ HGraph::SetImmutable() {
     if (this->immutable_.load(std::memory_order_acquire)) {
         return;
     }
+    std::scoped_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        return;
+    }
     std::scoped_lock<std::shared_mutex> add_lock(this->add_mutex_);
-    std::scoped_lock<std::shared_mutex> wlock(this->global_mutex_);
-    auto empty_mutex = std::make_shared<EmptyMutex>();
-    this->searcher_->SetMutexArray(empty_mutex);
-    this->parallel_searcher_->SetMutexArray(empty_mutex);
-    this->neighbors_mutex_ = empty_mutex;
-    this->immutable_.store(true, std::memory_order_release);
+    this->global_lock_.WithWriterCriticalSection([&]() {
+        auto empty_mutex = std::make_shared<EmptyMutex>();
+        this->searcher_->SetMutexArray(nullptr);
+        this->parallel_searcher_->SetMutexArray(nullptr);
+        this->neighbors_mutex_ = empty_mutex;
+        this->immutable_.store(true, std::memory_order_release);
+    });
 }
 
 void
@@ -720,6 +877,13 @@ HGraph::check_and_init_raw_vector(const FlattenInterfaceParamPtr& raw_vector_par
 
 bool
 HGraph::UpdateVector(int64_t id, const DatasetPtr& new_base, bool force_update) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support update vector");
+    }
+
     std::shared_lock<std::shared_mutex> force_remove_rlock;
     if (this->support_force_remove()) {
         force_remove_rlock = std::shared_lock<std::shared_mutex>(this->force_remove_mutex_);
@@ -785,7 +949,7 @@ HGraph::UpdateVector(int64_t id, const DatasetPtr& new_base, bool force_update) 
 
     // note that only modify vector need to obtain unique lock
     // and the lock has been obtained inside datacell
-    std::shared_lock<std::shared_mutex> map_lock;
+    GlobalReadGuard map_lock;
     if (this->using_dedup_storage() && !this->immutable_.load(std::memory_order_acquire)) {
         map_lock = this->acquire_global_read_lock();
     }

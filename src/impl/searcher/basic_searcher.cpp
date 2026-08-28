@@ -46,10 +46,11 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
                      const FilterPtr& filter,
                      FilterSearchSkipStrategy* skip_strategy,
                      Vector<InnerIdType>& to_be_visited_id,
-                     Vector<InnerIdType>& neighbors) const {
+                     Vector<InnerIdType>& neighbors,
+                     bool skip_neighbor_locks) const {
     uint32_t count_no_visited = 0;
 
-    if (this->mutex_array_ != nullptr) {
+    if (this->mutex_array_ != nullptr and not skip_neighbor_locks) {
         SharedLock lock(this->mutex_array_, current_node_pair.second);
         graph->GetNeighbors(current_node_pair.second, neighbors);
     } else {
@@ -233,8 +234,14 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
         if (not candidate_set->Empty()) {
             graph->Prefetch(candidate_set->Top().second, 0);
         }
-        const auto count_no_visited =
-            visit(graph, vl, current_node_pair, nullptr, nullptr, to_be_visited_id, neighbors);
+        const auto count_no_visited = visit(graph,
+                                            vl,
+                                            current_node_pair,
+                                            nullptr,
+                                            nullptr,
+                                            to_be_visited_id,
+                                            neighbors,
+                                            inner_search_param.skip_neighbor_locks);
         distance_provider.BatchQueryDistance(
             line_dists.data(), to_be_visited_id.data(), count_no_visited, ctx);
         dist_cmp += count_no_visited;
@@ -444,7 +451,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
                                  inner_search_param.is_inner_id_allowed,
                                  skip_strategy.get(),
                                  to_be_visited_id,
-                                 neighbors);
+                                 neighbors,
+                                 inner_search_param.skip_neighbor_locks);
 
         dist_cmp += count_no_visited;
 
@@ -771,7 +779,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
                                  inner_search_param.is_inner_id_allowed,
                                  skip_strategy.get(),
                                  to_be_visited_id,
-                                 neighbors);
+                                 neighbors,
+                                 inner_search_param.skip_neighbor_locks);
 
         bool collect_rabitq_lower_bound = false;
         if (use_custom_distance) {

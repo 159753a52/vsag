@@ -901,6 +901,22 @@ TEST_CASE("HGraph deduplicate_storage rejects Merge", "[ut][hgraph][duplicate][m
     REQUIRE(target->GetNumElements() == 1);
 }
 
+TEST_CASE("HGraph rejects Build after SetImmutable", "[ut][hgraph][immutable][build]") {
+    constexpr int64_t dim = 2;
+    auto common_param = MakeCommonParam(dim);
+    auto index = MakeHGraphIndex(MakeFp32HGraphJson(false), common_param);
+
+    std::vector<float> vectors = {0.0F, 0.0F};
+    std::vector<int64_t> ids = {10};
+    auto base = MakeFloatDataset(vectors, ids, dim, 1);
+    REQUIRE(index->Build(base).has_value());
+    REQUIRE(index->SetImmutable().has_value());
+
+    auto build_result = index->Build(base);
+    REQUIRE_FALSE(build_result.has_value());
+    REQUIRE(build_result.error().type == vsag::ErrorType::UNSUPPORTED_INDEX_OPERATION);
+}
+
 TEST_CASE("HGraph deduplicate_storage ExportModel keeps an empty reusable model",
           "[ut][hgraph][duplicate][export_model]") {
     constexpr int64_t dim = 2;
