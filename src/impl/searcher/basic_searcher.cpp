@@ -238,8 +238,14 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
         if (not candidate_set->Empty()) {
             graph->Prefetch(candidate_set->Top().second, 0);
         }
-        const auto count_no_visited =
-            visit(graph, vl, current_node_pair, nullptr, nullptr, to_be_visited_id, neighbors);
+        const auto count_no_visited = visit(graph,
+                                            vl,
+                                            current_node_pair,
+                                            nullptr,
+                                            nullptr,
+                                            to_be_visited_id,
+                                            neighbors,
+                                            inner_search_param.skip_neighbor_locks);
         distance_provider.BatchQueryDistance(
             line_dists.data(), to_be_visited_id.data(), count_no_visited, ctx);
         dist_cmp += count_no_visited;
