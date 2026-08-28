@@ -46,10 +46,11 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
                      const FilterPtr& filter,
                      FilterSearchSkipStrategy* skip_strategy,
                      Vector<InnerIdType>& to_be_visited_id,
-                     Vector<InnerIdType>& neighbors) const {
+                     Vector<InnerIdType>& neighbors,
+                     bool skip_neighbor_locks) const {
     uint32_t count_no_visited = 0;
 
-    if (this->mutex_array_ != nullptr) {
+    if (this->mutex_array_ != nullptr and not skip_neighbor_locks) {
         SharedLock lock(this->mutex_array_, current_node_pair.second);
         graph->GetNeighbors(current_node_pair.second, neighbors);
     } else {
@@ -60,8 +61,7 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
         if (i + prefetch_stride_visit_ < neighbors.size()) {
             vl->Prefetch(neighbors[i + prefetch_stride_visit_]);
         }
-        if (not vl->Get(neighbors[i])) {
-            vl->Set(neighbors[i]);
+        if (vl->TestSet(neighbors[i])) {
             if (not filter || count_no_visited == 0 || skip_strategy == nullptr ||
                 skip_strategy->ShouldVisit() || filter->CheckValid(neighbors[i])) {
                 to_be_visited_id[count_no_visited] = neighbors[i];
@@ -178,10 +178,15 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
                            Filter* attr_filter,
                            QueryContext* ctx) const {
     Allocator* alloc = select_query_allocator(ctx, allocator_);
-    auto top_candidates = std::make_shared<StandardHeap<true, false>>(alloc, -1);
-    auto candidate_set = std::make_shared<StandardHeap<true, false>>(alloc, -1);
+    // Concrete-typed pointer: hot-path Push/Pop/Top bypass the virtual
+    // DistanceHeap interface and inline into the search loop.
+    auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
+        alloc, std::max<int64_t>(inner_search_param.ef, 64));
+    auto* top_candidates = top_candidates_ptr.get();
+    StandardHeap<true, false> candidate_set_storage(alloc, -1);
+    auto* candidate_set = &candidate_set_storage;
     if (not graph or not vl) {
-        return top_candidates;
+        return top_candidates_ptr;
     }
     const auto check_func = [&distance_provider, &inner_search_param, attr_filter](InnerIdType id) {
         const auto original_id = distance_provider.OriginalId(id);
@@ -233,8 +238,14 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
         if (not candidate_set->Empty()) {
             graph->Prefetch(candidate_set->Top().second, 0);
         }
-        const auto count_no_visited =
-            visit(graph, vl, current_node_pair, nullptr, nullptr, to_be_visited_id, neighbors);
+        const auto count_no_visited = visit(graph,
+                                            vl,
+                                            current_node_pair,
+                                            nullptr,
+                                            nullptr,
+                                            to_be_visited_id,
+                                            neighbors,
+                                            inner_search_param.skip_neighbor_locks);
         distance_provider.BatchQueryDistance(
             line_dists.data(), to_be_visited_id.data(), count_no_visited, ctx);
         dist_cmp += count_no_visited;
@@ -314,7 +325,7 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
         ctx->stats->dist_cmp.fetch_add(dist_cmp, std::memory_order_relaxed);
         ctx->stats->hops.fetch_add(hops, std::memory_order_relaxed);
     }
-    return top_candidates;
+    return top_candidates_ptr;
 }
 
 template <InnerSearchMode mode>
@@ -330,11 +341,16 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
     // set customize query alloctor
     Allocator* alloc = select_query_allocator(ctx, allocator_);
 
-    auto top_candidates = std::make_shared<StandardHeap<true, false>>(alloc, -1);
-    auto candidate_set = std::make_shared<StandardHeap<true, false>>(alloc, -1);
+    // Concrete-typed pointer: hot-path Push/Pop/Top bypass the virtual
+    // DistanceHeap interface and inline into the search loop.
+    auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
+        alloc, std::max<int64_t>(inner_search_param.ef, 64));
+    auto* top_candidates = top_candidates_ptr.get();
+    StandardHeap<true, false> candidate_set_storage(alloc, -1);
+    auto* candidate_set = &candidate_set_storage;
 
     if (not graph or not flatten) {
-        return top_candidates;
+        return top_candidates_ptr;
     }
 
     auto computer = flatten->FactoryComputer(query);
@@ -367,7 +383,7 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
 
     if (!iter_ctx->IsFirstUsed()) {
         if (iter_ctx->Empty()) {
-            return top_candidates;
+            return top_candidates_ptr;
         }
         while (!iter_ctx->Empty()) {
             uint32_t cur_inner_id = iter_ctx->GetTopID();
@@ -444,7 +460,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
                                  inner_search_param.is_inner_id_allowed,
                                  skip_strategy.get(),
                                  to_be_visited_id,
-                                 neighbors);
+                                 neighbors,
+                                 inner_search_param.skip_neighbor_locks);
 
         dist_cmp += count_no_visited;
 
@@ -543,7 +560,7 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
         }
     }
 
-    return top_candidates;
+    return top_candidates_ptr;
 }
 
 template <InnerSearchMode mode>
@@ -560,12 +577,17 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
     // set customize query alloctor
     Allocator* alloc = select_query_allocator(ctx, allocator_);
 
-    auto top_candidates = std::make_shared<StandardHeap<true, false>>(alloc, -1);
-    auto candidate_set = std::make_shared<StandardHeap<true, false>>(alloc, -1);
+    // Concrete-typed pointer: hot-path Push/Pop/Top bypass the virtual
+    // DistanceHeap interface and inline into the search loop.
+    auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
+        alloc, std::max<int64_t>(inner_search_param.ef, 64));
+    auto* top_candidates = top_candidates_ptr.get();
+    StandardHeap<true, false> candidate_set_storage(alloc, -1);
+    auto* candidate_set = &candidate_set_storage;
 
     const bool use_custom_distance = inner_search_param.distance_batch_func != nullptr;
     if (not graph or (not flatten and not use_custom_distance)) {
-        return top_candidates;
+        return top_candidates_ptr;
     }
 
     ComputerInterfacePtr computer = nullptr;
@@ -771,7 +793,8 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
                                  inner_search_param.is_inner_id_allowed,
                                  skip_strategy.get(),
                                  to_be_visited_id,
-                                 neighbors);
+                                 neighbors,
+                                 inner_search_param.skip_neighbor_locks);
 
         bool collect_rabitq_lower_bound = false;
         if (use_custom_distance) {
@@ -929,7 +952,7 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
         stats.hops.fetch_add(hops, std::memory_order_relaxed);
     }
 
-    return top_candidates;
+    return top_candidates_ptr;
 }
 
 bool

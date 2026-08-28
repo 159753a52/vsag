@@ -15,10 +15,42 @@
 
 #include "dataset_impl.h"
 
+#include <memory>
+#include <utility>
+
 #include "impl/allocator/default_allocator.h"
 #include "unittest.h"
 #include "vsag/dataset.h"
 #include "vsag/engine.h"
+
+namespace {
+
+class CountingLazyStatistics : public vsag::LazyStatistics {
+public:
+    std::string
+    Dump() const override {
+        ++this->calls;
+        return R"({"dist_cmp":42,"hops":7})";
+    }
+
+    mutable uint32_t calls{0};
+};
+
+}  // namespace
+
+TEST_CASE("Dataset Lazy Statistics Move Test", "[ut][dataset]") {
+    auto lazy_stats = std::make_shared<CountingLazyStatistics>();
+    auto dataset = vsag::DatasetImpl::MakeEmptyDataset();
+    vsag::DatasetImpl::Statistics(dataset, lazy_stats);
+
+    auto* dataset_impl = dynamic_cast<vsag::DatasetImpl*>(dataset.get());
+    REQUIRE(dataset_impl != nullptr);
+    vsag::DatasetImpl moved(std::move(*dataset_impl));
+
+    CHECK(moved.GetStatistics() == R"({"dist_cmp":42,"hops":7})");
+    CHECK(lazy_stats->calls == 1);
+}
+
 TEST_CASE("Dataset Implement Test", "[ut][dataset]") {
     vsag::DefaultAllocator allocator;
     SECTION("allocator") {
