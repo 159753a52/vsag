@@ -52,12 +52,13 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
 
     const InnerIdType* neighbor_data = nullptr;
     uint32_t neighbor_count = 0;
+    const bool can_use_neighbor_view = skip_neighbor_locks || this->mutex_array_ == nullptr;
     if (this->mutex_array_ != nullptr and not skip_neighbor_locks) {
         SharedLock lock(this->mutex_array_, current_node_pair.second);
         graph->GetNeighbors(current_node_pair.second, neighbors);
         neighbor_data = neighbors.data();
         neighbor_count = static_cast<uint32_t>(neighbors.size());
-    } else if (skip_neighbor_locks &&
+    } else if (can_use_neighbor_view &&
                graph->GetNeighborsView(current_node_pair.second, neighbor_data, neighbor_count)) {
     } else {
         graph->GetNeighbors(current_node_pair.second, neighbors);

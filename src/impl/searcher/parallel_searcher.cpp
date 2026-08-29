@@ -50,6 +50,7 @@ ParallelSearcher::visit(const GraphInterfacePtr& graph,
                         uint64_t point_visited_num,
                         bool skip_neighbor_locks) const {
     uint32_t count_no_visited = 0;
+    const bool can_use_neighbor_view = skip_neighbor_locks || this->mutex_array_ == nullptr;
 
     auto process_neighbors = [&](const InnerIdType* neighbor_data, uint32_t neighbor_count) {
         for (uint32_t j = 0; j < neighbor_count; j++) {
@@ -67,7 +68,7 @@ ParallelSearcher::visit(const GraphInterfacePtr& graph,
         }
     };
 
-    if (skip_neighbor_locks) {
+    if (can_use_neighbor_view) {
         for (uint64_t i = 0; i < point_visited_num; i++) {
             const InnerIdType* neighbor_data = nullptr;
             uint32_t neighbor_count = 0;
