@@ -16,6 +16,7 @@
 #include "hgraph_parameter.h"
 
 #include <cmath>
+#include <optional>
 
 #include "datacell/extra_info_datacell_parameter.h"
 #include "datacell/flatten_datacell_parameter.h"
@@ -25,10 +26,27 @@
 #include "datacell/sparse_vector_datacell_parameter.h"
 #include "impl/odescent/odescent_graph_parameter.h"
 #include "inner_string_params.h"
+#include "utils/json_parameter_cache.h"
 #include "utils/param_compat_macros.h"
 #include "vsag/constants.h"
 
 namespace vsag {
+
+namespace {
+
+struct HGraphSearchParameterCache {
+    std::string parameters;
+    std::optional<HGraphSearchParameters> value;
+    bool valid{false};
+};
+
+HGraphSearchParameterCache&
+hgraph_search_parameter_cache() {
+    thread_local HGraphSearchParameterCache cache;
+    return cache;
+}
+
+}  // namespace
 
 HGraphParameter::HGraphParameter(const JsonType& json) : HGraphParameter() {
     this->FromJson(json);
@@ -317,7 +335,26 @@ HGraphParameter::CheckCompatibility(const ParamPtr& other) const {
 
 HGraphSearchParameters
 HGraphSearchParameters::FromJson(const std::string& json_string) {
-    auto params = JsonType::Parse(json_string);
+    HGraphSearchParameterCache* cache = nullptr;
+    if (IsJsonParameterCacheable(json_string)) {
+        cache = &hgraph_search_parameter_cache();
+        if (cache->valid && cache->parameters == json_string) {
+            return cache->value.value();
+        }
+        cache->valid = false;
+        cache->parameters = json_string;
+        cache->value.reset();
+    }
+
+    // The generic cache avoids reparsing JSON shared by all search-parameter consumers;
+    // this typed cache avoids repeating HGraph-specific field extraction.
+    const auto* cached_json = GetCachedJsonParameter(json_string);
+    std::optional<JsonType> uncached_json;
+    if (cached_json == nullptr) {
+        uncached_json.emplace(JsonType::Parse(json_string));
+        cached_json = &uncached_json.value();
+    }
+    const auto& params = *cached_json;
 
     HGraphSearchParameters obj;
 
@@ -400,6 +437,10 @@ HGraphSearchParameters::FromJson(const std::string& json_string) {
             params[INDEX_TYPE_HGRAPH][HGRAPH_PARAMETER_SKIP_STRATEGY].GetString());
     }
 
+    if (cache != nullptr) {
+        cache->value = obj;
+        cache->valid = true;
+    }
     return obj;
 }
 }  // namespace vsag

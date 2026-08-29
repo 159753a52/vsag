@@ -22,6 +22,13 @@ namespace vsag {
 
 uint32_t
 HGraph::Remove(const std::vector<int64_t>& ids, RemoveMode mode) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support remove");
+    }
+
     uint32_t delete_count = 0;
     if (mode == RemoveMode::MARK_REMOVE) {
         std::scoped_lock label_lock(this->label_lookup_mutex_);
@@ -198,15 +205,14 @@ HGraph::force_remove_one(int64_t label) {
     if (was_mark_removed) {
         this->delete_count_.fetch_sub(1);
     }
-    {
-        std::scoped_lock lock(this->global_mutex_);
+    this->global_lock_.WithWriterCriticalSection([&]() {
         if (this->total_count_.load() == 1) {
             this->entry_point_id_ = INVALID_ENTRY_POINT;
             this->bottom_graph_->SetTotalCount(0);
             this->route_graphs_.clear();
         }
         this->total_count_.fetch_sub(1);
-    }
+    });
     return 1;
 }
 
@@ -227,6 +233,12 @@ HGraph::shrink_to_fit() {
 
 void
 HGraph::UpdateAttribute(int64_t id, const AttributeSet& new_attrs) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support update attribute");
+    }
     auto inner_id = this->label_table_->GetIdByLabel(id);
     this->attr_filter_index_->UpdateBitsetsByAttr(new_attrs, inner_id, 0);
 }
@@ -235,8 +247,36 @@ void
 HGraph::UpdateAttribute(int64_t id,
                         const AttributeSet& new_attrs,
                         const AttributeSet& origin_attrs) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support update attribute");
+    }
     auto inner_id = this->label_table_->GetIdByLabel(id);
     this->attr_filter_index_->UpdateBitsetsByAttr(new_attrs, inner_id, 0, origin_attrs);
+}
+
+bool
+HGraph::UpdateId(int64_t old_id, int64_t new_id) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support update id");
+    }
+    return InnerIndexInterface::UpdateId(old_id, new_id);
+}
+
+bool
+HGraph::UpdateExtraInfo(const DatasetPtr& new_base) {
+    std::shared_lock<std::shared_mutex> immutable_transition_lock(
+        this->immutable_transition_mutex_);
+    if (this->immutable_.load(std::memory_order_acquire)) {
+        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
+                            "immutable index no support update extra info");
+    }
+    return InnerIndexInterface::UpdateExtraInfo(new_base);
 }
 
 }  // namespace vsag
