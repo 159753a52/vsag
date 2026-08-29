@@ -122,6 +122,13 @@ MemoryBlockIO::PrefetchImpl(uint64_t offset, uint64_t cache_line) {
         return;
     }
 
+    const auto block_no = offset >> block_bit_;
+    const auto block_off = offset & in_block_mask_;
+    if (cache_line <= this->size_ - offset && cache_line <= block_size_ - block_off) {
+        PrefetchLines(blocks_[block_no] + block_off, cache_line);
+        return;
+    }
+
     uint64_t remaining = std::min(cache_line, this->size_ - offset);
     while (remaining > 0) {
         const auto block_no = offset >> block_bit_;
