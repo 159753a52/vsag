@@ -42,7 +42,7 @@ PrefetchImpl<0>(const void* data) {
         break;
 
 inline void __attribute__((always_inline)) PrefetchLines(const void* data, uint64_t size) {
-    uint64_t n = std::min<uint64_t>(size / 64, 63ULL);
+    uint64_t n = std::min<uint64_t>(size / 64, 24ULL);
     switch (n) {
         VSAG_PREFETCH_LINE(0);
         VSAG_PREFETCH_LINE(1);
