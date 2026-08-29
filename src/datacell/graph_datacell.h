@@ -97,7 +97,8 @@ public:
         const uint64_t base =
             static_cast<uint64_t>(id) * static_cast<uint64_t>(this->code_line_size_) +
             sizeof(uint32_t);
-        io_->Prefetch(base + offset, offset < list_bytes ? (list_bytes - offset) : 0);
+        io_->Prefetch(base + offset,
+                      offset < list_bytes ? std::min<uint64_t>(list_bytes - offset, 128) : 0);
     }
 
     void
