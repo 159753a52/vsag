@@ -156,6 +156,29 @@ TEST_CASE("standard_heap small fixed and dynamic behavior", "[ut][distance_heap]
     REQUIRE(dynamic_heap.Top().first == 1.0F);
 }
 
+TEST_CASE("standard_heap bounded replacement keeps best records", "[ut][distance_heap]") {
+    auto allocator = SafeAllocator::FactoryDefaultAllocator();
+    StandardHeap<true, false> heap(allocator.get(), -1);
+
+    REQUIRE(heap.PushBounded(5.0F, 5, 3));
+    REQUIRE(heap.PushBounded(3.0F, 3, 3));
+    REQUIRE(heap.PushBounded(4.0F, 4, 3));
+    REQUIRE(heap.Size() == 3);
+    REQUIRE(heap.Top().first == 5.0F);
+
+    REQUIRE(heap.PushBounded(1.0F, 1, 3));
+    REQUIRE(heap.Size() == 3);
+    REQUIRE(heap.Top().first == 4.0F);
+    REQUIRE_FALSE(heap.PushBounded(6.0F, 6, 3));
+
+    std::vector<float> distances;
+    while (not heap.Empty()) {
+        distances.push_back(heap.Top().first);
+        heap.Pop();
+    }
+    REQUIRE(distances == std::vector<float>{4.0F, 3.0F, 1.0F});
+}
+
 TEST_CASE("standard_heap randomized differential vs std heap", "[ut][distance_heap]") {
     auto allocator = SafeAllocator::FactoryDefaultAllocator();
     std::mt19937_64 rng(20260822);

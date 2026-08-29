@@ -872,7 +872,17 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
                 candidate_set->Push(-dist, cur_id);
                 //                flatten->Prefetch(candidate_set->Top().second);
                 if (check_func(cur_id)) {
-                    top_candidates->Push(dist, cur_id);
+                    if constexpr (mode == KNN_SEARCH) {
+                        const bool evicts =
+                            top_candidates->Size() >= ef && dist < top_candidates->Top().first;
+                        const auto evicted_id = evicts ? top_candidates->Top().second : 0;
+                        top_candidates->PushBounded(dist, cur_id, ef);
+                        if (evicts && reasoning != nullptr) {
+                            reasoning->RecordEviction(evicted_id, hops);
+                        }
+                    } else {
+                        top_candidates->Push(dist, cur_id);
+                    }
                 } else if (reasoning != nullptr) {
                     reasoning->RecordFilterReject(cur_id);
                 }
