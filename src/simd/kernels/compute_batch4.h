@@ -16,10 +16,9 @@
 #pragma once
 
 // Batch-of-4 IP / L2 kernel: one query vector against four code vectors.
-// Results are accumulated internally and written to result1..result4. The
-// kernel initializes the four scalar outputs, so callers do not need to clear
-// a result array before invoking it. The four accumulators share each query
-// load, so we get 4x reuse of every query cache line.
+// Results are accumulated into result1..result4. The caller initializes the
+// four scalar outputs before invoking the kernel. The four accumulators share
+// each query load, so we get 4x reuse of every query cache line.
 
 #include <cstdint>
 
@@ -69,10 +68,6 @@ ComputeBatch4Impl(const float* RESTRICT query,
 
     if constexpr (W > 1) {
         if (dim < static_cast<uint64_t>(W)) {
-            r1 = 0.0F;
-            r2 = 0.0F;
-            r3 = 0.0F;
-            r4 = 0.0F;
             fallback(query, dim, c1, c2, c3, c4, r1, r2, r3, r4);
             return;
         }
@@ -130,10 +125,10 @@ ComputeBatch4Impl(const float* RESTRICT query,
         s3 = batch4_accumulate<T, Kind>(q, T::load(c3 + i), s3);
         s4 = batch4_accumulate<T, Kind>(q, T::load(c4 + i), s4);
     }
-    r1 = T::reduce_add(s1);
-    r2 = T::reduce_add(s2);
-    r3 = T::reduce_add(s3);
-    r4 = T::reduce_add(s4);
+    r1 += T::reduce_add(s1);
+    r2 += T::reduce_add(s2);
+    r3 += T::reduce_add(s3);
+    r4 += T::reduce_add(s4);
 
     // Preserve the established reduction tree for non-aligned dimensions.
     // Folding scalar tail terms into the already-reduced wide accumulator can
