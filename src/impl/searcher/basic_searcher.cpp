@@ -220,9 +220,10 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
     vl->Set(ep);
     auto lower_bound =
         top_candidates->Empty() ? std::numeric_limits<float>::max() : top_candidates->Top().first;
-    Vector<InnerIdType> to_be_visited_id(graph->MaximumDegree(), alloc);
-    Vector<InnerIdType> neighbors(graph->MaximumDegree(), alloc);
-    Vector<float> line_dists(graph->MaximumDegree(), alloc);
+    vl->PrepareSearchWorkspace(graph->MaximumDegree(), false);
+    auto& to_be_visited_id = vl->SearchToBeVisitedIds();
+    auto& neighbors = vl->SearchNeighbors();
+    auto& line_dists = vl->SearchLineDists();
     while (not candidate_set->Empty()) {
         ++hops;
         if (hops >= inner_search_param.hops_limit) {
@@ -367,10 +368,11 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
     uint32_t hops = 0;
     uint32_t dist_cmp = 0;
     uint32_t count_no_visited = 0;
-    Vector<InnerIdType> to_be_visited_id(graph->MaximumDegree(), alloc);
-    Vector<InnerIdType> neighbors(graph->MaximumDegree(), alloc);
-    Vector<float> line_dists(graph->MaximumDegree(), alloc);
-    Vector<float> lower_bound_dists(graph->MaximumDegree(), alloc);
+    vl->PrepareSearchWorkspace(graph->MaximumDegree(), true);
+    auto& to_be_visited_id = vl->SearchToBeVisitedIds();
+    auto& neighbors = vl->SearchNeighbors();
+    auto& line_dists = vl->SearchLineDists();
+    auto& lower_bound_dists = vl->SearchLowerBoundDists();
     auto skip_strategy = create_filter_search_skip_strategy(
         inner_search_param.skip_strategy_type,
         inner_search_param.is_inner_id_allowed != nullptr
@@ -605,10 +607,11 @@ BasicSearcher::search_impl(const GraphInterfacePtr& graph,
     uint32_t hops = 0;
     uint32_t dist_cmp = 0;
     uint32_t count_no_visited = 0;
-    Vector<InnerIdType> to_be_visited_id(graph->MaximumDegree(), alloc);
-    Vector<InnerIdType> neighbors(graph->MaximumDegree(), alloc);
-    Vector<float> line_dists(graph->MaximumDegree(), alloc);
-    Vector<float> lower_bound_dists(graph->MaximumDegree(), alloc);
+    vl->PrepareSearchWorkspace(graph->MaximumDegree(), true);
+    auto& to_be_visited_id = vl->SearchToBeVisitedIds();
+    auto& neighbors = vl->SearchNeighbors();
+    auto& line_dists = vl->SearchLineDists();
+    auto& lower_bound_dists = vl->SearchLowerBoundDists();
     const uint64_t custom_batch_capacity =
         use_custom_distance
             ? std::max<uint64_t>(1,

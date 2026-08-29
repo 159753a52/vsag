@@ -20,7 +20,11 @@
 namespace vsag {
 VisitedList::VisitedList(InnerIdType max_size, Allocator* allocator)
     : allocator_(allocator),
-      word_count_((static_cast<uint64_t>(max_size) + kBitsPerWord - 1) / kBitsPerWord) {
+      word_count_((static_cast<uint64_t>(max_size) + kBitsPerWord - 1) / kBitsPerWord),
+      search_to_be_visited_ids_(allocator),
+      search_neighbors_(allocator),
+      search_line_dists_(allocator),
+      search_lower_bound_dists_(allocator) {
     if (word_count_ == 0) {
         return;
     }
