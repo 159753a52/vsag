@@ -15,7 +15,6 @@
 
 #pragma once
 
-#include "container_types.h"
 #include "resource_object.h"
 #include "resource_object_pool.h"
 #include "typing.h"
@@ -93,49 +92,10 @@ public:
         this->touched_count_ = 0;
     }
 
-    // Searchers borrow these per-query buffers from the same exclusive
-    // VisitedList object. Capacities survive Reset(), so later queries avoid
-    // repeating the allocator calls for the same graph degree.
-    void
-    PrepareSearchWorkspace(uint64_t max_degree, bool need_lower_bound_distances) {
-        search_to_be_visited_ids_.resize(max_degree);
-        search_neighbors_.resize(max_degree);
-        search_line_dists_.resize(max_degree);
-        if (need_lower_bound_distances) {
-            search_lower_bound_dists_.resize(max_degree);
-        } else {
-            search_lower_bound_dists_.clear();
-        }
-    }
-
-    Vector<InnerIdType>&
-    SearchToBeVisitedIds() {
-        return search_to_be_visited_ids_;
-    }
-
-    Vector<InnerIdType>&
-    SearchNeighbors() {
-        return search_neighbors_;
-    }
-
-    Vector<float>&
-    SearchLineDists() {
-        return search_line_dists_;
-    }
-
-    Vector<float>&
-    SearchLowerBoundDists() {
-        return search_lower_bound_dists_;
-    }
-
     uint64_t
     GetMemoryUsage() const override {
         return sizeof(VisitedList) +
-               this->word_count_ * (sizeof(WordType) + sizeof(TouchedIndexType)) +
-               search_to_be_visited_ids_.capacity() * sizeof(InnerIdType) +
-               search_neighbors_.capacity() * sizeof(InnerIdType) +
-               search_line_dists_.capacity() * sizeof(float) +
-               search_lower_bound_dists_.capacity() * sizeof(float);
+               this->word_count_ * (sizeof(WordType) + sizeof(TouchedIndexType));
     }
 
 private:
@@ -148,11 +108,6 @@ private:
     uint32_t touched_count_{0};
 
     const uint64_t word_count_{0};
-
-    Vector<InnerIdType> search_to_be_visited_ids_;
-    Vector<InnerIdType> search_neighbors_;
-    Vector<float> search_line_dists_;
-    Vector<float> search_lower_bound_dists_;
 };
 
 using VisitedListPool = ResourceObjectPool<VisitedList>;
