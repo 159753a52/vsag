@@ -161,6 +161,6 @@ private:
     uint32_t mock_n_trials_{1};
 
     // runtime parameters
-    uint32_t prefetch_stride_visit_{3};
+    uint32_t prefetch_stride_visit_{2};
 };
 }  // namespace vsag
