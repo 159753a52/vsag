@@ -62,21 +62,10 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
         const auto prefetch_limit = neighbor_count > prefetch_stride_visit_
                                         ? neighbor_count - prefetch_stride_visit_
                                         : 0;
-        uint32_t i = 0;
-        for (; i < prefetch_limit; ++i) {
+        for (uint32_t i = 0; i < prefetch_limit; ++i) {
             vl->Prefetch(neighbors[i + prefetch_stride_visit_]);
-            const auto neighbor_id = neighbors[i];
-            if (vl->TestSet(neighbor_id)) {
-                to_be_visited_id[count_no_visited++] = neighbor_id;
-            }
         }
-        for (; i < neighbor_count; ++i) {
-            const auto neighbor_id = neighbors[i];
-            if (vl->TestSet(neighbor_id)) {
-                to_be_visited_id[count_no_visited++] = neighbor_id;
-            }
-        }
-        return count_no_visited;
+        return vl->TestSetBatch(neighbors.data(), neighbor_count, to_be_visited_id.data());
     }
 
     for (uint32_t i = 0; i < neighbors.size(); i++) {
