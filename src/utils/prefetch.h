@@ -25,7 +25,7 @@ __inline void __attribute__((__always_inline__)) PrefetchImpl(const void* data) 
         return PrefetchImpl<24>(data);
     }
     for (int i = 0; i < N; ++i) {
-        __builtin_prefetch(static_cast<const char*>(data) + i * 64, 0, 3);
+        __builtin_prefetch(static_cast<const char*>(data) + i * 64, 0, 0);
     }
 }
 
