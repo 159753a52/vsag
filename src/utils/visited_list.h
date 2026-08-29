@@ -78,10 +78,34 @@ public:
         return true;
     }
 
+    uint32_t
+    TestSetBatch(const InnerIdType* ids, uint32_t count, InnerIdType* output) {
+        auto* words = this->words_;
+        auto* touched_words = this->touched_words_;
+        auto touched_count = this->touched_count_;
+        uint32_t output_count = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto id = ids[i];
+            const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
+            const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
+            auto& word = words[word_id];
+            if ((word & mask) != 0) {
+                continue;
+            }
+            if (word == 0) {
+                touched_words[touched_count++] = static_cast<TouchedIndexType>(word_id);
+            }
+            word |= mask;
+            output[output_count++] = id;
+        }
+        this->touched_count_ = touched_count;
+        return output_count;
+    }
+
     void
     Prefetch(const InnerIdType& id) {
         const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
-        PrefetchLines(this->words_ + word_id, 64);
+        PrefetchImpl<1>(this->words_ + word_id);
     }
 
     void
