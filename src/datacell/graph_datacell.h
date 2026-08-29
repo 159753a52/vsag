@@ -291,18 +291,22 @@ GraphDataCell<IOTmpl>::GetNeighbors(InnerIdType id, Vector<InnerIdType>& neighbo
     if (is_support_delete_) {
         neighbor_count &= remove_flag_mask_;
         start += sizeof(neighbor_count);
-        Vector<InnerIdType> shared_neighbor_ids(neighbor_count, this->allocator_);
+        // Reuse the caller's buffer and compact in place. Search visits this
+        // method for every expanded node; allocating a second temporary array
+        // for version filtering adds allocator traffic without changing the
+        // returned neighbors.
+        neighbor_ids.resize(neighbor_count);
         this->io_->Read(
-            neighbor_count * sizeof(InnerIdType), start, (uint8_t*)(shared_neighbor_ids.data()));
-        neighbor_ids.clear();
-        neighbor_ids.reserve(neighbor_count);
-        for (int i = 0; i < neighbor_count; ++i) {
-            uint8_t neighbor_version = shared_neighbor_ids[i] >> id_bit_;
-            InnerIdType neighbor_id = shared_neighbor_ids[i] & remove_flag_mask_;
+            neighbor_count * sizeof(InnerIdType), start, (uint8_t*)(neighbor_ids.data()));
+        uint32_t valid_count = 0;
+        for (uint32_t i = 0; i < neighbor_count; ++i) {
+            const uint8_t neighbor_version = neighbor_ids[i] >> id_bit_;
+            const InnerIdType neighbor_id = neighbor_ids[i] & remove_flag_mask_;
             if (node_versions_[neighbor_id] == neighbor_version) {
-                neighbor_ids.push_back(neighbor_id);
+                neighbor_ids[valid_count++] = neighbor_id;
             }
         }
+        neighbor_ids.resize(valid_count);
     } else {
         start += sizeof(neighbor_count);
         neighbor_ids.resize(neighbor_count);
