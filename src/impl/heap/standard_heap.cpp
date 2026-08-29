@@ -15,14 +15,23 @@
 
 #include "standard_heap.h"
 
+#include <algorithm>
+
 namespace vsag {
 template <bool max_heap, bool fixed_size>
 StandardHeap<max_heap, fixed_size>::StandardHeap(Allocator* allocator, int64_t max_size)
     : DistanceHeap(allocator, max_size), queue_(allocator) {
     // Search heaps are usually created empty and grow to a small bounded
-    // frontier. Reserve the common initial capacity so each query does not
-    // repeatedly allocate and move heap records.
-    queue_.reserve(max_size > 0 ? static_cast<uint64_t>(max_size) : 64);
+    // frontier. Clamp the reservation hint so malformed or unusually large
+    // values cannot request an impossible allocation.
+    constexpr uint64_t kMinInitialReserve = 64;
+    constexpr uint64_t kMaxInitialReserve = 512;
+    const auto initial_reserve =
+        max_size > 0 ? std::clamp<uint64_t>(static_cast<uint64_t>(max_size),
+                                            kMinInitialReserve,
+                                            kMaxInitialReserve)
+                     : kMinInitialReserve;
+    queue_.reserve(initial_reserve);
 }
 
 template <bool max_heap, bool fixed_size>
