@@ -84,42 +84,6 @@ SQ8UniformComputeCodesIPBatch4Impl(const uint8_t* RESTRICT query,
     auto mask = T::set1_epi16(0xff);
 
     uint64_t d = 0;
-    for (; d + 2 * kElemsPerIter - 1 < dim; d += 2 * kElemsPerIter) {
-        const auto query0 = T::loadu(query + d);
-        const auto query0_low = T::and_si(query0, mask);
-        const auto query0_high = T::srli_epi16(query0, 8);
-        const auto query1 = T::loadu(query + d + kElemsPerIter);
-        const auto query1_low = T::and_si(query1, mask);
-        const auto query1_high = T::srli_epi16(query1, 8);
-
-        auto code = T::loadu(code1 + d);
-        sum1 = T::add_epi32(sum1, T::madd_epi16(query0_low, T::and_si(code, mask)));
-        sum1 = T::add_epi32(sum1, T::madd_epi16(query0_high, T::srli_epi16(code, 8)));
-        code = T::loadu(code1 + d + kElemsPerIter);
-        sum1 = T::add_epi32(sum1, T::madd_epi16(query1_low, T::and_si(code, mask)));
-        sum1 = T::add_epi32(sum1, T::madd_epi16(query1_high, T::srli_epi16(code, 8)));
-
-        code = T::loadu(code2 + d);
-        sum2 = T::add_epi32(sum2, T::madd_epi16(query0_low, T::and_si(code, mask)));
-        sum2 = T::add_epi32(sum2, T::madd_epi16(query0_high, T::srli_epi16(code, 8)));
-        code = T::loadu(code2 + d + kElemsPerIter);
-        sum2 = T::add_epi32(sum2, T::madd_epi16(query1_low, T::and_si(code, mask)));
-        sum2 = T::add_epi32(sum2, T::madd_epi16(query1_high, T::srli_epi16(code, 8)));
-
-        code = T::loadu(code3 + d);
-        sum3 = T::add_epi32(sum3, T::madd_epi16(query0_low, T::and_si(code, mask)));
-        sum3 = T::add_epi32(sum3, T::madd_epi16(query0_high, T::srli_epi16(code, 8)));
-        code = T::loadu(code3 + d + kElemsPerIter);
-        sum3 = T::add_epi32(sum3, T::madd_epi16(query1_low, T::and_si(code, mask)));
-        sum3 = T::add_epi32(sum3, T::madd_epi16(query1_high, T::srli_epi16(code, 8)));
-
-        code = T::loadu(code4 + d);
-        sum4 = T::add_epi32(sum4, T::madd_epi16(query0_low, T::and_si(code, mask)));
-        sum4 = T::add_epi32(sum4, T::madd_epi16(query0_high, T::srli_epi16(code, 8)));
-        code = T::loadu(code4 + d + kElemsPerIter);
-        sum4 = T::add_epi32(sum4, T::madd_epi16(query1_low, T::and_si(code, mask)));
-        sum4 = T::add_epi32(sum4, T::madd_epi16(query1_high, T::srli_epi16(code, 8)));
-    }
     for (; d + kElemsPerIter - 1 < dim; d += kElemsPerIter) {
         auto xx = T::loadu(query + d);
         auto xx1 = T::and_si(xx, mask);
