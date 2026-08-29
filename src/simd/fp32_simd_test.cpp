@@ -115,7 +115,7 @@ CheckFP32ComputeBatch4Accuracy(const std::vector<float>& vec1,
         if (not supported) {
             return;
         }
-        std::vector<float> actual(4, 0.0F);
+        std::vector<float> actual = {17.0F, -3.0F, 5.0F, 9.0F};
         func(query,
              dim,
              vec2.data() + i * dim,
