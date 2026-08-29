@@ -67,6 +67,22 @@ public:
     virtual void
     GetNeighbors(InnerIdType id, Vector<InnerIdType>& neighbor_ids) const = 0;
 
+    /**
+     * Returns a read-only view of a node's neighbors when the storage can
+     * expose a contiguous, stable range without copying. The default is to
+     * report that no view is available; callers must fall back to
+     * GetNeighbors(). The returned pointer is only valid for the duration of
+     * the read-side protection held by the caller.
+     */
+    [[nodiscard]] virtual bool
+    GetNeighborsView(InnerIdType /*id*/,
+                     const InnerIdType*& neighbor_ids,
+                     uint32_t& neighbor_count) const {
+        neighbor_ids = nullptr;
+        neighbor_count = 0;
+        return false;
+    }
+
     [[nodiscard]] virtual bool
     CheckIdExists(InnerIdType id) const = 0;
 

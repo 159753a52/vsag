@@ -51,6 +51,36 @@ ParallelSearcher::visit(const GraphInterfacePtr& graph,
                         bool skip_neighbor_locks) const {
     uint32_t count_no_visited = 0;
 
+    auto process_neighbors = [&](const InnerIdType* neighbor_data, uint32_t neighbor_count) {
+        for (uint32_t j = 0; j < neighbor_count; j++) {
+            const auto neighbor_id = neighbor_data[j];
+            if (j + prefetch_stride_visit_ < neighbor_count) {
+                vl->Prefetch(neighbor_data[j + prefetch_stride_visit_]);
+            }
+            if (vl->TestSet(neighbor_id)) {
+                if (not filter || count_no_visited == 0 || skip_strategy == nullptr ||
+                    skip_strategy->ShouldVisit() || filter->CheckValid(neighbor_id)) {
+                    to_be_visited_id[count_no_visited] = neighbor_id;
+                    count_no_visited++;
+                }
+            }
+        }
+    };
+
+    if (skip_neighbor_locks) {
+        for (uint64_t i = 0; i < point_visited_num; i++) {
+            const InnerIdType* neighbor_data = nullptr;
+            uint32_t neighbor_count = 0;
+            if (graph->GetNeighborsView(node_pair[i].second, neighbor_data, neighbor_count)) {
+                process_neighbors(neighbor_data, neighbor_count);
+            } else {
+                graph->GetNeighbors(node_pair[i].second, neighbors[i]);
+                process_neighbors(neighbors[i].data(), static_cast<uint32_t>(neighbors[i].size()));
+            }
+        }
+        return count_no_visited;
+    }
+
     if (this->mutex_array_ != nullptr and not skip_neighbor_locks) {
         for (uint64_t i = 0; i < point_visited_num; i++) {
             SharedLock lock(this->mutex_array_, node_pair[i].second);
@@ -63,18 +93,7 @@ ParallelSearcher::visit(const GraphInterfacePtr& graph,
     }
 
     for (uint64_t i = 0; i < point_visited_num; i++) {
-        for (uint32_t j = 0; j < neighbors[i].size(); j++) {
-            if (j + prefetch_stride_visit_ < neighbors[i].size()) {
-                vl->Prefetch(neighbors[i][j + prefetch_stride_visit_]);
-            }
-            if (vl->TestSet(neighbors[i][j])) {
-                if (not filter || count_no_visited == 0 || skip_strategy == nullptr ||
-                    skip_strategy->ShouldVisit() || filter->CheckValid(neighbors[i][j])) {
-                    to_be_visited_id[count_no_visited] = neighbors[i][j];
-                    count_no_visited++;
-                }
-            }
-        }
+        process_neighbors(neighbors[i].data(), static_cast<uint32_t>(neighbors[i].size()));
     }
     return count_no_visited;
 }
