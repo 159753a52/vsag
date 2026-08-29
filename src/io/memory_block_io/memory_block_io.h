@@ -17,7 +17,6 @@
 
 #include "io/common/basic_io.h"
 #include "io/memory_block_io/memory_block_io_parameter.h"
-#include "utils/prefetch.h"
 
 namespace vsag {
 class IndexCommonParam;
@@ -144,22 +143,7 @@ public:
      * @param cache_line The size of the cache line to prefetch.
      */
     void
-    PrefetchImpl(uint64_t offset, uint64_t cache_line = 64) {
-        if (cache_line == 0 || offset >= this->size_) {
-            return;
-        }
-
-        uint64_t remaining = std::min(cache_line, this->size_ - offset);
-        while (remaining > 0) {
-            const auto block_no = offset >> block_bit_;
-            const auto block_off = offset & in_block_mask_;
-            const auto block_remaining = block_size_ - block_off;
-            const auto chunk = std::min(remaining, block_remaining);
-            PrefetchLines(blocks_[block_no] + block_off, chunk);
-            offset += chunk;
-            remaining -= chunk;
-        }
-    }
+    PrefetchImpl(uint64_t offset, uint64_t cache_line = 64);
 
     void
     ShrinkImpl(uint64_t size);
