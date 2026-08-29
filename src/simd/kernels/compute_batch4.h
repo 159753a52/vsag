@@ -130,12 +130,34 @@ ComputeBatch4Impl(const float* RESTRICT query,
     r3 += T::reduce_add(s3);
     r4 += T::reduce_add(s4);
 
-    // Preserve the established reduction tree for non-aligned dimensions.
-    // Folding scalar tail terms into the already-reduced wide accumulator can
-    // produce materially different results under cancellation.
+    // Preserve the established reduction tree for non-aligned dimensions. If
+    // the remaining tail is too short for the next SIMD tier, handle it here
+    // to avoid a chain of cross-ISA fallback calls.
     if constexpr (W > 1) {
         if (dim > i) {
-            fallback(query + i, dim - i, c1 + i, c2 + i, c3 + i, c4 + i, r1, r2, r3, r4);
+            const auto tail = dim - i;
+            if (tail < static_cast<uint64_t>((W + 1) / 2)) {
+                for (; i < dim; ++i) {
+                    const auto q = query[i];
+                    if constexpr (Kind == Batch4Kind::IP) {
+                        r1 += q * c1[i];
+                        r2 += q * c2[i];
+                        r3 += q * c3[i];
+                        r4 += q * c4[i];
+                    } else {
+                        const auto d1 = q - c1[i];
+                        const auto d2 = q - c2[i];
+                        const auto d3 = q - c3[i];
+                        const auto d4 = q - c4[i];
+                        r1 += d1 * d1;
+                        r2 += d2 * d2;
+                        r3 += d3 * d3;
+                        r4 += d4 * d4;
+                    }
+                }
+            } else {
+                fallback(query + i, tail, c1 + i, c2 + i, c3 + i, c4 + i, r1, r2, r3, r4);
+            }
         }
     }
 }
