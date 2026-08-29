@@ -57,6 +57,19 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
         graph->GetNeighbors(current_node_pair.second, neighbors);
     }
 
+    if (filter == nullptr) {
+        for (uint32_t i = 0; i < neighbors.size(); ++i) {
+            if (i + prefetch_stride_visit_ < neighbors.size()) {
+                vl->Prefetch(neighbors[i + prefetch_stride_visit_]);
+            }
+            const auto neighbor_id = neighbors[i];
+            if (vl->TestSet(neighbor_id)) {
+                to_be_visited_id[count_no_visited++] = neighbor_id;
+            }
+        }
+        return count_no_visited;
+    }
+
     for (uint32_t i = 0; i < neighbors.size(); i++) {
         if (i + prefetch_stride_visit_ < neighbors.size()) {
             vl->Prefetch(neighbors[i + prefetch_stride_visit_]);
