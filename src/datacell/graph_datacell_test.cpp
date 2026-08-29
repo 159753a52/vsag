@@ -68,50 +68,6 @@ TEST_CASE("GraphDataCell Basic Test", "[ut][GraphDataCell]") {
     TestGraphDataCell(graph_param, common_param, is_support_delete);
 }
 
-TEST_CASE("GraphDataCell exposes contiguous neighbor view when safe", "[ut][GraphDataCell]") {
-    auto allocator = SafeAllocator::FactoryDefaultAllocator();
-    auto io_type = GENERATE("memory_io", "block_memory_io");
-    auto support_remove = GENERATE(false, true);
-    constexpr const char* graph_param_temp =
-        R"(
-        {{
-            "io_params": {{
-                "type": "{}"
-            }},
-            "max_degree": 4,
-            "init_capacity": 2,
-            "support_remove": {}
-        }}
-        )";
-
-    IndexCommonParam common_param;
-    common_param.dim_ = 8;
-    common_param.allocator_ = allocator;
-    auto param_json = JsonType::Parse(fmt::format(graph_param_temp, io_type, support_remove));
-    auto graph_param = GraphInterfaceParameter::GetGraphParameterByJson(
-        GraphStorageTypes::GRAPH_STORAGE_TYPE_VALUE_FLAT, param_json);
-    auto graph = GraphInterface::MakeInstance(graph_param, common_param);
-    graph->Resize(2);
-
-    Vector<InnerIdType> expected(allocator.get());
-    expected.push_back(1);
-    expected.push_back(0);
-    graph->InsertNeighborsById(0, expected);
-
-    const InnerIdType* view = nullptr;
-    uint32_t count = 0;
-    REQUIRE(graph->GetNeighborsView(0, view, count) == !support_remove);
-    if (not support_remove) {
-        REQUIRE(view != nullptr);
-        REQUIRE(count == expected.size());
-        REQUIRE(view[0] == expected[0]);
-        REQUIRE(view[1] == expected[1]);
-    } else {
-        REQUIRE(view == nullptr);
-        REQUIRE(count == 0);
-    }
-}
-
 TEST_CASE("GraphDataCell Remove Test", "[ut][GraphDataCell]") {
     auto allocator = SafeAllocator::FactoryDefaultAllocator();
     auto dim = GENERATE(32, 64);

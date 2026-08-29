@@ -64,11 +64,6 @@ public:
     GetNeighbors(InnerIdType id, Vector<InnerIdType>& neighbor_ids) const override;
 
     [[nodiscard]] bool
-    GetNeighborsView(InnerIdType id,
-                     const InnerIdType*& neighbor_ids,
-                     uint32_t& neighbor_count) const override;
-
-    [[nodiscard]] bool
     CheckIdExists(InnerIdType id) const override {
         return id < this->total_count_ && id < this->max_capacity_;
     }
@@ -318,51 +313,6 @@ GraphDataCell<IOTmpl>::GetNeighbors(InnerIdType id, Vector<InnerIdType>& neighbo
         this->io_->Read(
             neighbor_ids.size() * sizeof(InnerIdType), start, (uint8_t*)(neighbor_ids.data()));
     }
-}
-
-template <typename IOTmpl>
-bool
-GraphDataCell<IOTmpl>::GetNeighborsView(InnerIdType id,
-                                        const InnerIdType*& neighbor_ids,
-                                        uint32_t& neighbor_count) const {
-    neighbor_ids = nullptr;
-    neighbor_count = 0;
-    if constexpr (not IOTmpl::InMemory) {
-        return false;
-    }
-    if (is_support_delete_) {
-        return false;
-    }
-
-    auto start = static_cast<uint64_t>(id) * static_cast<uint64_t>(this->code_line_size_);
-    uint32_t stored_count = 0;
-    if (not this->io_->Read(
-            sizeof(stored_count), start, reinterpret_cast<uint8_t*>(&stored_count))) {
-        return false;
-    }
-    if (stored_count > this->maximum_degree_) {
-        return false;
-    }
-    neighbor_count = stored_count;
-    if (stored_count == 0) {
-        return true;
-    }
-
-    bool need_release = false;
-    const auto* data = this->io_->Read(static_cast<uint64_t>(stored_count) * sizeof(InnerIdType),
-                                       start + sizeof(stored_count),
-                                       need_release);
-    if (data == nullptr) {
-        neighbor_count = 0;
-        return false;
-    }
-    if (need_release) {
-        this->io_->Release(data);
-        neighbor_count = 0;
-        return false;
-    }
-    neighbor_ids = reinterpret_cast<const InnerIdType*>(data);
-    return true;
 }
 
 template <typename IOTmpl>

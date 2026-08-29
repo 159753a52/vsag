@@ -50,31 +50,21 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
                      bool skip_neighbor_locks) const {
     uint32_t count_no_visited = 0;
 
-    const InnerIdType* neighbor_data = nullptr;
-    uint32_t neighbor_count = 0;
-    const bool can_use_neighbor_view = skip_neighbor_locks || this->mutex_array_ == nullptr;
     if (this->mutex_array_ != nullptr and not skip_neighbor_locks) {
         SharedLock lock(this->mutex_array_, current_node_pair.second);
         graph->GetNeighbors(current_node_pair.second, neighbors);
-        neighbor_data = neighbors.data();
-        neighbor_count = static_cast<uint32_t>(neighbors.size());
-    } else if (can_use_neighbor_view &&
-               graph->GetNeighborsView(current_node_pair.second, neighbor_data, neighbor_count)) {
     } else {
         graph->GetNeighbors(current_node_pair.second, neighbors);
-        neighbor_data = neighbors.data();
-        neighbor_count = static_cast<uint32_t>(neighbors.size());
     }
 
-    for (uint32_t i = 0; i < neighbor_count; i++) {
-        const auto neighbor_id = neighbor_data[i];
-        if (i + prefetch_stride_visit_ < neighbor_count) {
-            vl->Prefetch(neighbor_data[i + prefetch_stride_visit_]);
+    for (uint32_t i = 0; i < neighbors.size(); i++) {
+        if (i + prefetch_stride_visit_ < neighbors.size()) {
+            vl->Prefetch(neighbors[i + prefetch_stride_visit_]);
         }
-        if (vl->TestSet(neighbor_id)) {
+        if (vl->TestSet(neighbors[i])) {
             if (not filter || count_no_visited == 0 || skip_strategy == nullptr ||
-                skip_strategy->ShouldVisit() || filter->CheckValid(neighbor_id)) {
-                to_be_visited_id[count_no_visited] = neighbor_id;
+                skip_strategy->ShouldVisit() || filter->CheckValid(neighbors[i])) {
+                to_be_visited_id[count_no_visited] = neighbors[i];
                 count_no_visited++;
             }
         }
