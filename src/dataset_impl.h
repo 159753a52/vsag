@@ -18,30 +18,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <unordered_map>
-#include <utility>
 #include <variant>
 
 #include "vsag/allocator.h"
 #include "vsag/dataset.h"
 
 namespace vsag {
-
-// Internal helper that defers search-statistics serialization until first read.
-//
-// Rendering statistics as JSON costs dozens of allocations per query while most
-// callers never read them. Producers may hand a lazy provider to
-// DatasetImpl::Statistics(std::shared_ptr<LazyStatistics>) so the payload is
-// rendered only when GetStatistics() is first called.
-class LazyStatistics {
-public:
-    virtual ~LazyStatistics() = default;
-
-    virtual std::string
-    Dump() const = 0;
-};
 
 class DatasetImpl : public Dataset {
     using var = std::variant<int64_t,
@@ -65,15 +49,10 @@ public:
     DatasetImpl&
     operator=(const DatasetImpl&) = delete;
 
-    DatasetImpl(DatasetImpl&& other) noexcept
-        : owner_(other.owner_),
-          data_(std::move(other.data_)),
-          allocator_(other.allocator_),
-          Statistics_(std::move(other.Statistics_)),
-          Reasoning_(std::move(other.Reasoning_)),
-          lazy_statistics_(std::move(other.lazy_statistics_)) {
+    DatasetImpl(DatasetImpl&& other) noexcept {
+        this->owner_ = other.owner_;
         other.owner_ = false;
-        other.allocator_ = nullptr;
+        this->data_ = other.data_;
         other.data_.clear();
     }
 
@@ -290,27 +269,8 @@ public:
 
     DatasetPtr
     Statistics(const std::string& Statisticss) override {
-        std::lock_guard<std::mutex> lock(this->statistics_mutex_);
-        this->lazy_statistics_ = nullptr;
         this->Statistics_ = Statisticss;
         return shared_from_this();
-    }
-
-    DatasetPtr
-    Statistics(std::shared_ptr<LazyStatistics> statistics) {
-        std::lock_guard<std::mutex> lock(this->statistics_mutex_);
-        this->lazy_statistics_ = std::move(statistics);
-        return shared_from_this();
-    }
-
-    // Attach deferred statistics to an internally created (DatasetImpl-backed)
-    // dataset through its public DatasetPtr handle.
-    static DatasetPtr
-    Statistics(DatasetPtr dataset, std::shared_ptr<LazyStatistics> statistics) {
-        if (auto* impl = dynamic_cast<DatasetImpl*>(dataset.get()); impl != nullptr) {
-            impl->Statistics(std::move(statistics));
-        }
-        return dataset;
     }
 
     std::vector<std::string>
@@ -318,7 +278,7 @@ public:
 
     std::string
     GetStatistics() const override {
-        return this->GetStatisticsSnapshot();
+        return this->Statistics_;
     }
 
     DatasetPtr
@@ -392,11 +352,6 @@ public:
     MakeEmptyDataset();
 
 private:
-    // Render deferred statistics and return a snapshot while holding the same
-    // lock used by eager and lazy setters.
-    std::string
-    GetStatisticsSnapshot() const;
-
     static const std::string&
     HierarchyPathsPrefix() {
         static const std::string prefix = std::string(DATASET_PATHS) + ":";
@@ -423,11 +378,8 @@ private:
     std::unordered_map<std::string, var> data_;
     Allocator* allocator_ = nullptr;
 
-    mutable std::string Statistics_{"{}"};
+    std::string Statistics_{"{}"};
     std::string Reasoning_{"{}"};
-
-    mutable std::mutex statistics_mutex_;
-    mutable std::shared_ptr<LazyStatistics> lazy_statistics_;
 };
 
 };  // namespace vsag

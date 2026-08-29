@@ -598,19 +598,9 @@ DatasetImpl::Append(const DatasetPtr& other) {
     return shared_from_this();
 }
 
-std::string
-DatasetImpl::GetStatisticsSnapshot() const {
-    std::lock_guard<std::mutex> lock(this->statistics_mutex_);
-    if (this->lazy_statistics_ != nullptr) {
-        this->Statistics_ = this->lazy_statistics_->Dump();
-        this->lazy_statistics_ = nullptr;
-    }
-    return this->Statistics_;
-}
-
 std::vector<std::string>
 DatasetImpl::GetStatistics(const std::vector<std::string>& stat_keys) const {
-    auto json = JsonType::Parse(this->GetStatisticsSnapshot());
+    auto json = JsonType::Parse(this->Statistics_);
     std::vector<std::string> result;
     for (const auto& key : stat_keys) {
         if (json.Contains(key)) {

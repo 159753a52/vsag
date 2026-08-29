@@ -28,29 +28,6 @@
 
 namespace vsag {
 
-namespace {
-
-// Defers the statistics JSON rendering until GetStatistics() is first read; the
-// search timing path never pays for it.
-class HGraphLazyStatistics : public LazyStatistics {
-public:
-    HGraphLazyStatistics(std::shared_ptr<const SearchStatistics> stats,
-                         MCIHybridSearchFields mci_fields)
-        : stats_(std::move(stats)), mci_fields_(std::move(mci_fields)) {
-    }
-
-    std::string
-    Dump() const override {
-        return MakeMCIStatistics(*this->stats_, this->mci_fields_).Dump();
-    }
-
-private:
-    std::shared_ptr<const SearchStatistics> stats_;
-    MCIHybridSearchFields mci_fields_;
-};
-
-}  // namespace
-
 static DatasetPtr
 make_empty_dataset_with_stats(const SearchStatistics& stats) {
     auto dataset_result = DatasetImpl::MakeEmptyDataset();
@@ -442,8 +419,8 @@ HGraph::RangeSearch(const DatasetPtr& query,
 [[nodiscard]] DatasetPtr
 HGraph::SearchWithRequest(const SearchRequest& request) const {
     ValidateSearchThreshold(request.threshold_);
-    auto stats = std::make_shared<SearchStatistics>();
-    QueryContext ctx{.alloc = this->allocator_, .stats = stats.get()};
+    SearchStatistics stats;
+    QueryContext ctx{.alloc = this->allocator_, .stats = &stats};
     if (request.search_allocator_ != nullptr) {
         ctx.alloc = request.search_allocator_;
     }
@@ -537,8 +514,8 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
                 const auto label = this->label_table_->GetLabelById(inner_id);
                 request.distance_batch_func_(&label, 1, &dist);
                 CHECK_ARGUMENT(std::isfinite(dist), "distance callback must return finite scores");
-                stats->AddDistance(SearchStatistics::DistancePhase::APPROXIMATE,
-                                   DistanceEvaluationBackend::UNKNOWN);
+                stats.AddDistance(SearchStatistics::DistancePhase::APPROXIMATE,
+                                  DistanceEvaluationBackend::UNKNOWN);
             } else {
                 precise_flatten->Query(&dist, computer, &inner_id, 1, &ctx);
             }
@@ -633,7 +610,7 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         if (params.enable_time_record) {
             search_param.time_cost = std::make_shared<Timer>();
             search_param.time_cost->SetThreshold(params.timeout_ms);
-            stats->is_timeout.store(false, std::memory_order_relaxed);
+            stats.is_timeout.store(false, std::memory_order_relaxed);
         }
         search_param.parallel_search_thread_count = params.parallel_search_thread_count;
 
@@ -739,39 +716,26 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
             }
         }
         auto result = this->pack_knn_result_with_extra_info(search_result, ctx.alloc);
-        DatasetImpl::Statistics(
-            result, std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
+        result->Statistics(mci_result.MakeStatistics(stats).Dump());
         return result;
     }
 
     // NaN is unordered and cannot be returned. Infinity remains a valid legacy result only when
     // threshold filtering is absent; the searcher has already kept it out of threshold heaps.
-    bool needs_result_filter = request.threshold_.has_value();
-    if (not needs_result_filter) {
-        const auto* records = search_result->GetData();
-        for (uint64_t i = 0; i < search_result->Size(); ++i) {
-            if (std::isnan(records[i].first)) {
-                needs_result_filter = true;
-                break;
-            }
+    DistanceRecordVector finite_records(ctx.alloc);
+    finite_records.reserve(search_result->Size());
+    while (not search_result->Empty()) {
+        const auto record = search_result->Top();
+        search_result->Pop();
+        if (not std::isnan(record.first) and
+            (not request.threshold_.has_value() or std::isfinite(record.first))) {
+            finite_records.push_back(record);
         }
     }
-    if (needs_result_filter) {
-        DistanceRecordVector finite_records(ctx.alloc);
-        finite_records.reserve(search_result->Size());
-        while (not search_result->Empty()) {
-            const auto record = search_result->Top();
-            search_result->Pop();
-            if (not std::isnan(record.first) and
-                (not request.threshold_.has_value() or std::isfinite(record.first))) {
-                finite_records.push_back(record);
-            }
-        }
-        for (const auto& record : finite_records) {
-            search_result->Push(record);
-        }
-        filter_search_result_by_threshold(search_result, request.threshold_, ctx.alloc);
+    for (const auto& record : finite_records) {
+        search_result->Push(record);
     }
+    filter_search_result_by_threshold(search_result, request.threshold_, ctx.alloc);
     while (search_result->Size() > static_cast<uint64_t>(k)) {
         search_result->Pop();
     }
@@ -779,8 +743,7 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
     // return an empty dataset directly if searcher returns nothing
     if (search_result->Empty()) {
         auto dataset_result = DatasetImpl::MakeEmptyDataset();
-        DatasetImpl::Statistics(
-            dataset_result, std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
+        dataset_result->Statistics(mci_result.MakeStatistics(stats).Dump());
         if (reasoning_ctx) {
             reasoning_ctx->DiagnoseExpectedTargets();
             dataset_result->Reasoning(reasoning_ctx->GenerateReport());
@@ -789,10 +752,7 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
     }
     auto count = static_cast<const int64_t>(search_result->Size());
 
-    Vector<InnerIdType> result_inner_ids(this->allocator_);
-    if (reasoning_ctx != nullptr) {
-        result_inner_ids.resize(static_cast<size_t>(count));
-    }
+    Vector<InnerIdType> result_inner_ids(static_cast<size_t>(count), this->allocator_);
 
     auto [dataset_results, dists, ids] = create_fast_dataset(count, ctx.alloc);
     char* extra_infos = nullptr;
@@ -806,16 +766,13 @@ HGraph::SearchWithRequest(const SearchRequest& request) const {
         const auto& top = search_result->Top();
         dists[j] = top.first;
         ids[j] = this->label_table_->GetLabelById(top.second);
-        if (reasoning_ctx != nullptr) {
-            result_inner_ids[j] = top.second;
-        }
+        result_inner_ids[j] = top.second;
         if (extra_infos != nullptr) {
             this->extra_infos_->GetExtraInfoById(top.second, extra_infos + extra_info_size_ * j);
         }
         search_result->Pop();
     }
-    DatasetImpl::Statistics(dataset_results,
-                            std::make_shared<HGraphLazyStatistics>(stats, std::move(mci_result)));
+    dataset_results->Statistics(mci_result.MakeStatistics(stats).Dump());
 
     // Generate reasoning report if reasoning context was created
     if (reasoning_ctx) {
