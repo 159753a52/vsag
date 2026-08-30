@@ -113,6 +113,15 @@ public:
     [[nodiscard]] const uint8_t*
     DirectReadImpl(uint64_t size, uint64_t offset, bool& need_release) const;
 
+    [[nodiscard]] const uint8_t*
+    ReadOnlyData(uint64_t size, uint64_t offset) const {
+        if (size == 0 || offset > this->size_ || size > this->size_ - offset ||
+            not check_in_one_block(offset, offset + size)) {
+            return nullptr;
+        }
+        return this->get_data_ptr(offset);
+    }
+
     /**
      * @brief Releases data previously read via DirectReadImpl.
      *

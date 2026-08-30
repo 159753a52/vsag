@@ -25,10 +25,16 @@ namespace vsag {
 class Allocator;
 
 DEFINE_POINTER(VisitedList);
+
+// Per-query visited-id bitmap. Words are indexed by id / 64; words dirtied
+// since the last Reset are recorded in touched_words_ so Reset only clears
+// what the query actually touched instead of scanning (or generation-stamping)
+// the whole structure. This keeps Get() at a single load from one array,
+// which sits on the graph-traversal hot path.
 class VisitedList : public ResourceObject {
 public:
     using WordType = uint64_t;
-    using TagType = uint16_t;
+    using TouchedIndexType = uint32_t;
     static constexpr uint64_t kBitsPerWord = sizeof(WordType) * 8;
 
 public:
@@ -39,11 +45,12 @@ public:
     Set(const InnerIdType& id) {
         const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
         const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
-        if (this->tags_[word_id] != this->tag_) {
-            this->tags_[word_id] = this->tag_;
-            this->words_[word_id] = mask;
+        auto& word = this->words_[word_id];
+        if (word == 0) {
+            this->touched_words_[this->touched_count_++] = static_cast<TouchedIndexType>(word_id);
+            word = mask;
         } else {
-            this->words_[word_id] |= mask;
+            word |= mask;
         }
     }
 
@@ -51,21 +58,68 @@ public:
     Get(const InnerIdType& id) {
         const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
         const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
-        return this->tags_[word_id] == this->tag_ and (this->words_[word_id] & mask) != 0;
+        return (this->words_[word_id] & mask) != 0;
+    }
+
+    // Marks id visited and returns whether it was previously unvisited.
+    // Fuses the visitor-side Get-then-Set pair into a single word access.
+    bool
+    TestSet(const InnerIdType& id) {
+        const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
+        const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
+        auto& word = this->words_[word_id];
+        if ((word & mask) != 0) {
+            return false;
+        }
+        if (word == 0) {
+            this->touched_words_[this->touched_count_++] = static_cast<TouchedIndexType>(word_id);
+        }
+        word |= mask;
+        return true;
+    }
+
+    uint32_t
+    TestSetBatch(const InnerIdType* ids, uint32_t count, InnerIdType* output) {
+        auto* words = this->words_;
+        auto* touched_words = this->touched_words_;
+        auto touched_count = this->touched_count_;
+        uint32_t output_count = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            const auto id = ids[i];
+            const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
+            const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
+            auto& word = words[word_id];
+            if ((word & mask) != 0) {
+                continue;
+            }
+            if (word == 0) {
+                touched_words[touched_count++] = static_cast<TouchedIndexType>(word_id);
+            }
+            word |= mask;
+            output[output_count++] = id;
+        }
+        this->touched_count_ = touched_count;
+        return output_count;
     }
 
     void
     Prefetch(const InnerIdType& id) {
         const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
-        PrefetchLines(this->tags_ + word_id, 64);
+        PrefetchImpl<1>(this->words_ + word_id);
     }
 
     void
-    Reset() override;
+    Reset() override {
+        for (uint32_t i = 0; i < this->touched_count_; ++i) {
+            this->words_[this->touched_words_[i]] = 0;
+        }
+        this->touched_count_ = 0;
+    }
 
     uint64_t
     GetMemoryUsage() const override {
-        return sizeof(VisitedList) + this->word_count_ * (sizeof(WordType) + sizeof(TagType));
+        return sizeof(VisitedList) +
+               this->word_count_ * (sizeof(WordType) + sizeof(TouchedIndexType));
     }
 
 private:
@@ -73,9 +127,9 @@ private:
 
     WordType* words_{nullptr};
 
-    TagType* tags_{nullptr};
+    TouchedIndexType* touched_words_{nullptr};
 
-    TagType tag_{1};
+    uint32_t touched_count_{0};
 
     const uint64_t word_count_{0};
 };
