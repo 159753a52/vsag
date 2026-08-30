@@ -37,18 +37,15 @@ GetCachedJsonParameter(const std::string& parameters) {
     struct JsonParameterCache {
         std::string parameters;
         std::optional<JsonType> json;
-        bool valid{false};
     };
     thread_local JsonParameterCache cache;
 
-    if (cache.valid && cache.parameters == parameters) {
+    if (cache.json.has_value() && cache.parameters == parameters) {
         return &cache.json.value();
     }
 
-    cache.valid = false;
     cache.parameters = parameters;
     cache.json.emplace(JsonType::Parse(parameters));
-    cache.valid = true;
     return &cache.json.value();
 }
 

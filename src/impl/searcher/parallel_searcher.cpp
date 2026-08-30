@@ -126,8 +126,8 @@ ParallelSearcher::search_impl(const GraphInterfacePtr& graph,
     auto top_candidates_ptr = std::make_shared<StandardHeap<true, false>>(
         alloc, std::max<int64_t>(inner_search_param.ef, 64));
     auto* top_candidates = top_candidates_ptr.get();
-    auto candidate_set_ptr = std::make_shared<StandardHeap<true, false>>(alloc, -1);
-    auto* candidate_set = candidate_set_ptr.get();
+    StandardHeap<true, false> candidate_set_storage(alloc, -1);
+    auto* candidate_set = &candidate_set_storage;
 
     if (not graph or not flatten) {
         return top_candidates_ptr;

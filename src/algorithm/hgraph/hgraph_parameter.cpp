@@ -37,7 +37,6 @@ namespace {
 struct HGraphSearchParameterCache {
     std::string parameters;
     std::optional<HGraphSearchParameters> value;
-    bool valid{false};
 };
 
 HGraphSearchParameterCache&
@@ -338,10 +337,9 @@ HGraphSearchParameters::FromJson(const std::string& json_string) {
     HGraphSearchParameterCache* cache = nullptr;
     if (IsJsonParameterCacheable(json_string)) {
         cache = &hgraph_search_parameter_cache();
-        if (cache->valid && cache->parameters == json_string) {
+        if (cache->value.has_value() && cache->parameters == json_string) {
             return cache->value.value();
         }
-        cache->valid = false;
         cache->parameters = json_string;
         cache->value.reset();
     }
@@ -439,7 +437,6 @@ HGraphSearchParameters::FromJson(const std::string& json_string) {
 
     if (cache != nullptr) {
         cache->value = obj;
-        cache->valid = true;
     }
     return obj;
 }
