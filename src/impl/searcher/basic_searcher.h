@@ -112,8 +112,7 @@ private:
           const FilterPtr& filter,
           FilterSearchSkipStrategy* skip_strategy,
           Vector<InnerIdType>& to_be_visited_id,
-          Vector<InnerIdType>& neighbors,
-          bool skip_neighbor_locks = false) const;
+          Vector<InnerIdType>& neighbors) const;
 
     template <InnerSearchMode mode = InnerSearchMode::KNN_SEARCH>
     DistHeapPtr

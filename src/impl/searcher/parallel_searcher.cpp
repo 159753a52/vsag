@@ -47,11 +47,10 @@ ParallelSearcher::visit(const GraphInterfacePtr& graph,
                         FilterSearchSkipStrategy* skip_strategy,
                         Vector<InnerIdType>& to_be_visited_id,
                         std::vector<Vector<InnerIdType>>& neighbors,
-                        uint64_t point_visited_num,
-                        bool skip_neighbor_locks) const {
+                        uint64_t point_visited_num) const {
     uint32_t count_no_visited = 0;
 
-    if (this->mutex_array_ != nullptr and not skip_neighbor_locks) {
+    if (this->mutex_array_ != nullptr) {
         for (uint64_t i = 0; i < point_visited_num; i++) {
             SharedLock lock(this->mutex_array_, node_pair[i].second);
             graph->GetNeighbors(node_pair[i].second, neighbors[i]);
@@ -275,8 +274,7 @@ ParallelSearcher::search_impl(const GraphInterfacePtr& graph,
                                  skip_strategy.get(),
                                  to_be_visited_id,
                                  neighbors,
-                                 num_explore_nodes,
-                                 inner_search_param.skip_neighbor_locks);
+                                 num_explore_nodes);
 
         bool collect_rabitq_lower_bound = false;
         if (inner_search_param.enable_rabitq_one_bit_search and top_candidates->Size() == ef and

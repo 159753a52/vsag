@@ -56,8 +56,7 @@ private:
           FilterSearchSkipStrategy* skip_strategy,
           Vector<InnerIdType>& to_be_visited_id,
           std::vector<Vector<InnerIdType>>& neighbors,
-          uint64_t point_visited_num,
-          bool skip_neighbor_locks = false) const;
+          uint64_t point_visited_num) const;
 
     template <InnerSearchMode mode = KNN_SEARCH>
     DistHeapPtr
