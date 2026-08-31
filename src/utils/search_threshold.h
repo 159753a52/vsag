@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <new>
 #include <optional>
@@ -23,6 +24,7 @@
 
 #include "common.h"
 #include "json_types.h"
+#include "utils/json_parameter_cache.h"
 #include "vsag/dataset.h"
 
 namespace vsag {
@@ -34,7 +36,13 @@ ParseSearchThreshold(const std::string& parameters) {
     if (parameters.empty()) {
         return std::nullopt;
     }
-    const auto json = JsonType::Parse(parameters);
+    const auto* cached_json = GetCachedJsonParameter(parameters);
+    std::optional<JsonType> uncached_json;
+    if (cached_json == nullptr) {
+        uncached_json.emplace(JsonType::Parse(parameters));
+        cached_json = &uncached_json.value();
+    }
+    const auto& json = *cached_json;
     if (not json.Contains(SEARCH_THRESHOLD)) {
         return std::nullopt;
     }

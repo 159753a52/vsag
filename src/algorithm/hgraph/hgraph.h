@@ -247,6 +247,12 @@ public:
     bool
     UpdateVector(int64_t id, const DatasetPtr& new_base, bool force_update = false) override;
 
+    bool
+    UpdateId(int64_t old_id, int64_t new_id) override;
+
+    bool
+    UpdateExtraInfo(const DatasetPtr& new_base) override;
+
     void
     UpdateAttribute(int64_t id, const AttributeSet& new_attrs) override;
 
@@ -341,7 +347,7 @@ public:
     void
     ensure_physical_code_capacity(CodeSlotIdType required_capacity);
 
-    /// Ensure physical code storage while global_mutex_ unique lock is already held.
+    /// Ensure physical code storage while the global writer section is already held.
     void
     ensure_physical_code_capacity_unlocked(CodeSlotIdType required_capacity);
 
@@ -378,6 +384,10 @@ public:
                      DistanceRecordVector* rabitq_lower_bound_candidates = nullptr) const;
 
 private:
+    // Shared implementation for Add() and Build(); caller holds immutable_transition_mutex_.
+    std::vector<int64_t>
+    add_without_transition_lock(const DatasetPtr& data);
+
     [[nodiscard]] std::shared_lock<std::shared_mutex>
     acquire_global_read_lock() const {
         if (not this->physical_code_resize_pending_.load(std::memory_order_acquire)) {
@@ -867,6 +877,9 @@ private:
 
     std::shared_ptr<VisitedListPool> pool_{nullptr};  // pool of visited-lists for search
 
+    // Prevents SetImmutable() from completing while an Add() that passed the
+    // mutable-state check is still in flight.
+    mutable std::shared_mutex immutable_transition_mutex_;
     mutable std::shared_mutex global_mutex_;            // guards total_count_, entry_point_id_
     mutable std::shared_mutex persistent_codes_mutex_;  // pins flatten storage during MCI search
     mutable std::mutex mci_build_mutex_;                // serializes full MCI reconstruction
@@ -874,7 +887,7 @@ private:
     mutable MutexArrayPtr neighbors_mutex_;             // per-node locks for neighbor lists
     mutable std::shared_mutex add_mutex_;               // serializes Add() operations
     mutable std::shared_mutex force_remove_mutex_;      // serializes force-remove operations
-    // Single-flights physical code growth before taking the global writer lock.
+    // Serializes physical code growth before taking the global writer lock.
     mutable std::mutex physical_code_resize_mutex_;
     std::atomic<bool> physical_code_resize_pending_{false};
 

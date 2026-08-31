@@ -54,6 +54,33 @@ public:
         return this->tags_[word_id] == this->tag_ and (this->words_[word_id] & mask) != 0;
     }
 
+    bool
+    TestSet(const InnerIdType& id) {
+        const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
+        const auto mask = WordType{1} << (static_cast<uint64_t>(id) % kBitsPerWord);
+        if (this->tags_[word_id] != this->tag_) {
+            this->tags_[word_id] = this->tag_;
+            this->words_[word_id] = mask;
+            return true;
+        }
+        if ((this->words_[word_id] & mask) != 0) {
+            return false;
+        }
+        this->words_[word_id] |= mask;
+        return true;
+    }
+
+    uint32_t
+    TestSetBatch(const InnerIdType* ids, uint32_t count, InnerIdType* output) {
+        uint32_t output_count = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (this->TestSet(ids[i])) {
+                output[output_count++] = ids[i];
+            }
+        }
+        return output_count;
+    }
+
     void
     Prefetch(const InnerIdType& id) {
         const auto word_id = static_cast<uint64_t>(id) / kBitsPerWord;
