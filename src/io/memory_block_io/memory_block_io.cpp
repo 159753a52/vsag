@@ -92,11 +92,11 @@ MemoryBlockIO::ReadImpl(uint64_t size, uint64_t offset, uint8_t* data) const {
 
 const uint8_t*
 MemoryBlockIO::DirectReadImpl(uint64_t size, uint64_t offset, bool& need_release) const {
+    if (const auto* data = this->ReadOnlyData(size, offset); data != nullptr) {
+        need_release = false;
+        return data;
+    }
     if (check_valid_offset(size + offset)) {
-        if (check_in_one_block(offset, size + offset)) {
-            need_release = false;
-            return this->get_data_ptr(offset);
-        }
         need_release = true;
         auto* ptr = reinterpret_cast<uint8_t*>(this->allocator_->Allocate(size));
         this->ReadImpl(size, offset, ptr);

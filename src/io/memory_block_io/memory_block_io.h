@@ -115,7 +115,7 @@ public:
 
     [[nodiscard]] const uint8_t*
     ReadOnlyData(uint64_t size, uint64_t offset) const {
-        if (size == 0 || offset > this->size_ || size > this->size_ - offset ||
+        if (offset > this->size_ || size > this->size_ - offset ||
             not check_in_one_block(offset, offset + size)) {
             return nullptr;
         }

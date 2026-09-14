@@ -779,12 +779,7 @@ HGraph::check_and_init_raw_vector(const FlattenInterfaceParamPtr& raw_vector_par
 
 bool
 HGraph::UpdateVector(int64_t id, const DatasetPtr& new_base, bool force_update) {
-    std::shared_lock<std::shared_mutex> immutable_transition_lock(
-        this->immutable_transition_mutex_);
-    if (this->immutable_.load(std::memory_order_acquire)) {
-        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
-                            "immutable index no support update vector");
-    }
+    auto transition_lock = this->acquire_mutable_transition_lock("update vector");
 
     std::shared_lock<std::shared_mutex> force_remove_rlock;
     if (this->support_force_remove()) {

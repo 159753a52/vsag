@@ -59,7 +59,10 @@ template <bool max_heap, bool fixed_size>
 void
 StandardHeap<max_heap, fixed_size>::Pop() {
     const auto size = this->queue_.size();
-    if (size <= 1) {
+    if (size == 0) {
+        return;
+    }
+    if (size == 1) {
         this->queue_.pop_back();
         return;
     }

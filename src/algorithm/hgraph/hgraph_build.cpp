@@ -139,12 +139,7 @@ HGraph::train_codes_with_dataset(const DatasetPtr& train_data) {
 
 std::vector<int64_t>
 HGraph::Build(const DatasetPtr& data) {
-    std::shared_lock<std::shared_mutex> immutable_transition_lock(
-        this->immutable_transition_mutex_);
-    if (this->immutable_.load(std::memory_order_acquire)) {
-        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
-                            "immutable index no support build");
-    }
+    auto transition_lock = this->acquire_mutable_transition_lock("build");
     CHECK_ARGUMENT(GetNumElements() == 0, "index is not empty");
     this->build_cache_hit_rate_ = -1.0F;
     this->build_cache_hit_nodes_ = 0;
@@ -294,12 +289,7 @@ HGraph::build_by_odescent(const DatasetPtr& data) {
 
 std::vector<int64_t>
 HGraph::Add(const DatasetPtr& data) {
-    std::shared_lock<std::shared_mutex> immutable_transition_lock(
-        this->immutable_transition_mutex_);
-    if (this->immutable_.load(std::memory_order_acquire)) {
-        throw VsagException(ErrorType::UNSUPPORTED_INDEX_OPERATION,
-                            "immutable index no support add");
-    }
+    auto transition_lock = this->acquire_mutable_transition_lock("add");
 
     return this->add_without_transition_lock(data);
 }

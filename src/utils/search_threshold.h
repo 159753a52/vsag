@@ -36,13 +36,7 @@ ParseSearchThreshold(const std::string& parameters) {
     if (parameters.empty()) {
         return std::nullopt;
     }
-    const auto* cached_json = GetCachedJsonParameter(parameters);
-    std::optional<JsonType> uncached_json;
-    if (cached_json == nullptr) {
-        uncached_json.emplace(JsonType::Parse(parameters));
-        cached_json = &uncached_json.value();
-    }
-    const auto& json = *cached_json;
+    const auto& json = GetOrParseJsonParameter(parameters);
     if (not json.Contains(SEARCH_THRESHOLD)) {
         return std::nullopt;
     }

@@ -51,4 +51,15 @@ GetCachedJsonParameter(const std::string& parameters) {
     return &cache.json.value();
 }
 
+inline const JsonType&
+GetOrParseJsonParameter(const std::string& parameters) {
+    if (const auto* cached = GetCachedJsonParameter(parameters); cached != nullptr) {
+        return *cached;
+    }
+
+    thread_local JsonType uncached;
+    uncached = JsonType::Parse(parameters);
+    return uncached;
+}
+
 }  // namespace vsag
