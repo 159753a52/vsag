@@ -346,7 +346,8 @@ HGraphSearchParameters::FromJson(const std::string& json_string) {
 
     // The generic cache avoids reparsing JSON shared by all search-parameter consumers;
     // this typed cache avoids repeating HGraph-specific field extraction.
-    const auto& params = GetOrParseJsonParameter(json_string);
+    std::optional<JsonType> uncached;
+    const auto& params = GetOrParseJsonParameter(json_string, uncached);
 
     HGraphSearchParameters obj;
 

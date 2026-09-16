@@ -52,14 +52,14 @@ GetCachedJsonParameter(const std::string& parameters) {
 }
 
 inline const JsonType&
-GetOrParseJsonParameter(const std::string& parameters) {
+GetOrParseJsonParameter(const std::string& parameters, std::optional<JsonType>& uncached) {
     if (const auto* cached = GetCachedJsonParameter(parameters); cached != nullptr) {
         return *cached;
     }
 
-    thread_local JsonType uncached;
-    uncached = JsonType::Parse(parameters);
-    return uncached;
+    // Oversized parameters belong to the caller, not the lifetime of a worker thread.
+    uncached.emplace(JsonType::Parse(parameters));
+    return *uncached;
 }
 
 }  // namespace vsag
