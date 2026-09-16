@@ -16,6 +16,7 @@
 #include "hgraph_parameter.h"
 
 #include <cmath>
+#include <optional>
 
 #include "datacell/extra_info_datacell_parameter.h"
 #include "datacell/flatten_datacell_parameter.h"
@@ -25,10 +26,26 @@
 #include "datacell/sparse_vector_datacell_parameter.h"
 #include "impl/odescent/odescent_graph_parameter.h"
 #include "inner_string_params.h"
+#include "utils/json_parameter_cache.h"
 #include "utils/param_compat_macros.h"
 #include "vsag/constants.h"
 
 namespace vsag {
+
+namespace {
+
+struct HGraphSearchParameterCache {
+    std::string parameters;
+    std::optional<HGraphSearchParameters> value;
+};
+
+HGraphSearchParameterCache&
+hgraph_search_parameter_cache() {
+    thread_local HGraphSearchParameterCache cache;
+    return cache;
+}
+
+}  // namespace
 
 HGraphParameter::HGraphParameter(const JsonType& json) : HGraphParameter() {
     this->FromJson(json);
@@ -317,7 +334,20 @@ HGraphParameter::CheckCompatibility(const ParamPtr& other) const {
 
 HGraphSearchParameters
 HGraphSearchParameters::FromJson(const std::string& json_string) {
-    auto params = JsonType::Parse(json_string);
+    HGraphSearchParameterCache* cache = nullptr;
+    if (IsJsonParameterCacheable(json_string)) {
+        cache = &hgraph_search_parameter_cache();
+        if (cache->value.has_value() && cache->parameters == json_string) {
+            return cache->value.value();
+        }
+        cache->parameters = json_string;
+        cache->value.reset();
+    }
+
+    // The generic cache avoids reparsing JSON shared by all search-parameter consumers;
+    // this typed cache avoids repeating HGraph-specific field extraction.
+    std::optional<JsonType> uncached;
+    const auto& params = GetOrParseJsonParameter(json_string, uncached);
 
     HGraphSearchParameters obj;
 
@@ -400,6 +430,9 @@ HGraphSearchParameters::FromJson(const std::string& json_string) {
             params[INDEX_TYPE_HGRAPH][HGRAPH_PARAMETER_SKIP_STRATEGY].GetString());
     }
 
+    if (cache != nullptr) {
+        cache->value = obj;
+    }
     return obj;
 }
 }  // namespace vsag

@@ -382,7 +382,6 @@ FlattenDataCell<QuantTmpl, IOTmpl>::query(float* result_dists,
         }
     }
 
-    memset(result_dists, 0, sizeof(float) * id_count);
     int64_t i = 0;
     for (; i + 3 < id_count; i += 4) {
         for (int64_t j = 0; j < 4; ++j) {
@@ -480,6 +479,15 @@ FlattenDataCell<QuantTmpl, IOTmpl>::ComputePairVectors(InnerIdType id1, InnerIdT
 template <typename QuantTmpl, typename IOTmpl>
 const uint8_t*
 FlattenDataCell<QuantTmpl, IOTmpl>::GetCodesById(InnerIdType id, bool& need_release) const {
+    if constexpr (std::is_same_v<IOTmpl, MemoryBlockIO>) {
+        const auto offset = static_cast<uint64_t>(id) * static_cast<uint64_t>(code_size_);
+        const auto* data =
+            static_cast<const MemoryBlockIO*>(this->io_.get())->ReadOnlyData(code_size_, offset);
+        if (data != nullptr) {
+            need_release = false;
+            return data;
+        }
+    }
     return io_->Read(
         code_size_, static_cast<uint64_t>(id) * static_cast<uint64_t>(code_size_), need_release);
 }

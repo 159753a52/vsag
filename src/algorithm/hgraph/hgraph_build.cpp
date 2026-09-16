@@ -139,6 +139,7 @@ HGraph::train_codes_with_dataset(const DatasetPtr& train_data) {
 
 std::vector<int64_t>
 HGraph::Build(const DatasetPtr& data) {
+    auto transition_lock = this->acquire_mutable_transition_lock("build");
     CHECK_ARGUMENT(GetNumElements() == 0, "index is not empty");
     this->build_cache_hit_rate_ = -1.0F;
     this->build_cache_hit_nodes_ = 0;
@@ -159,7 +160,7 @@ HGraph::Build(const DatasetPtr& data) {
         if (optimized_result.has_value()) {
             ret = std::move(optimized_result.value());
         } else if (graph_type_ == GRAPH_TYPE_VALUE_NSW) {
-            ret = this->Add(data);
+            ret = this->add_without_transition_lock(data);
         } else {
             ret = this->build_by_odescent(data);
         }
@@ -288,6 +289,13 @@ HGraph::build_by_odescent(const DatasetPtr& data) {
 
 std::vector<int64_t>
 HGraph::Add(const DatasetPtr& data) {
+    auto transition_lock = this->acquire_mutable_transition_lock("add");
+
+    return this->add_without_transition_lock(data);
+}
+
+std::vector<int64_t>
+HGraph::add_without_transition_lock(const DatasetPtr& data) {
     std::unique_lock<std::mutex> mci_add_lock(this->mci_add_mutex_, std::defer_lock);
     if (this->mci_parameters_.enabled) {
         mci_add_lock.lock();

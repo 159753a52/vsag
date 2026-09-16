@@ -92,11 +92,11 @@ MemoryBlockIO::ReadImpl(uint64_t size, uint64_t offset, uint8_t* data) const {
 
 const uint8_t*
 MemoryBlockIO::DirectReadImpl(uint64_t size, uint64_t offset, bool& need_release) const {
+    if (const auto* data = this->ReadOnlyData(size, offset); data != nullptr) {
+        need_release = false;
+        return data;
+    }
     if (check_valid_offset(size + offset)) {
-        if (check_in_one_block(offset, size + offset)) {
-            need_release = false;
-            return this->get_data_ptr(offset);
-        }
         need_release = true;
         auto* ptr = reinterpret_cast<uint8_t*>(this->allocator_->Allocate(size));
         this->ReadImpl(size, offset, ptr);
@@ -118,7 +118,20 @@ MemoryBlockIO::MultiReadImpl(uint8_t* datas,
 }
 void
 MemoryBlockIO::PrefetchImpl(uint64_t offset, uint64_t cache_line) {
-    PrefetchLines(get_data_ptr(offset), cache_line);
+    if (cache_line == 0 || offset >= this->size_) {
+        return;
+    }
+
+    uint64_t remaining = std::min(cache_line, this->size_ - offset);
+    while (remaining > 0) {
+        const auto block_no = offset >> block_bit_;
+        const auto block_off = offset & in_block_mask_;
+        const auto block_remaining = block_size_ - block_off;
+        const auto chunk = std::min(remaining, block_remaining);
+        PrefetchLines(blocks_[block_no] + block_off, chunk);
+        offset += chunk;
+        remaining -= chunk;
+    }
 }
 
 void

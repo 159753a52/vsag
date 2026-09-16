@@ -118,7 +118,7 @@ HGraph::try_optimized_build(const DatasetPtr& data) {
 
     std::vector<int64_t> result;
     if (graph_type_ == GRAPH_TYPE_VALUE_NSW) {
-        result = this->Add(data);
+        result = this->add_without_transition_lock(data);
     } else {
         result = this->build_by_odescent(data);
     }
