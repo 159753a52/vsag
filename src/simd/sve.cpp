@@ -1083,8 +1083,8 @@ RaBitQFloatBinaryIP(const float* vector, const uint8_t* bits, uint64_t dim, floa
     const uint64_t step = svcntw();
     svfloat32_t sum = svdup_f32(0.0f);
 
-    const svfloat32_t positive_val = inv_sqrt_d < 1e-3 ? svdup_f32(1.0f) : svdup_f32(inv_sqrt_d);
-    const svfloat32_t negative_val = inv_sqrt_d < 1e-3 ? svdup_f32(0.0f) : svdup_f32(-inv_sqrt_d);
+    const svfloat32_t positive_val = inv_sqrt_d == 0.0F ? svdup_f32(1.0f) : svdup_f32(inv_sqrt_d);
+    const svfloat32_t negative_val = inv_sqrt_d == 0.0F ? svdup_f32(0.0f) : svdup_f32(-inv_sqrt_d);
     svbool_t predicate = svwhilelt_b32(i, dim);
     do {
         svuint32_t predicate_values = svld1ub_u32(predicate, &predicate_array[i]);
@@ -1114,7 +1114,10 @@ RaBitQFloatBinaryIPBatch4(const float* vector,
                           uint64_t dim,
                           float inv_sqrt_d,
                           float* results) {
-    neon::RaBitQFloatBinaryIPBatch4(vector, bits1, bits2, bits3, bits4, dim, inv_sqrt_d, results);
+    results[0] = sve::RaBitQFloatBinaryIP(vector, bits1, dim, inv_sqrt_d);
+    results[1] = sve::RaBitQFloatBinaryIP(vector, bits2, dim, inv_sqrt_d);
+    results[2] = sve::RaBitQFloatBinaryIP(vector, bits3, dim, inv_sqrt_d);
+    results[3] = sve::RaBitQFloatBinaryIP(vector, bits4, dim, inv_sqrt_d);
 }
 
 void

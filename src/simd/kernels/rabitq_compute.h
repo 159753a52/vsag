@@ -41,8 +41,8 @@ RaBitQFloatBinaryIPImpl(const float* vector,
     }
 
     auto sum = T::zero();
-    auto pos = inv_sqrt_d > 1e-3f ? T::set1(inv_sqrt_d) : T::set1(1.0f);
-    auto neg = inv_sqrt_d > 1e-3f ? T::set1(-inv_sqrt_d) : T::zero();
+    auto pos = inv_sqrt_d != 0.0F ? T::set1(inv_sqrt_d) : T::set1(1.0f);
+    auto neg = inv_sqrt_d != 0.0F ? T::set1(-inv_sqrt_d) : T::zero();
 
     uint64_t d = 0;
     for (; d + W <= dim; d += W) {
@@ -89,8 +89,8 @@ RaBitQFloatBinaryIPBatch4Impl(const float* vector,
         return;
     }
 
-    auto pos = inv_sqrt_d > 1e-3f ? T::set1(inv_sqrt_d) : T::set1(1.0f);
-    auto neg = inv_sqrt_d > 1e-3f ? T::set1(-inv_sqrt_d) : T::zero();
+    auto pos = inv_sqrt_d != 0.0F ? T::set1(inv_sqrt_d) : T::set1(1.0f);
+    auto neg = inv_sqrt_d != 0.0F ? T::set1(-inv_sqrt_d) : T::zero();
     typename T::FloatVec sums[4] = {T::zero(), T::zero(), T::zero(), T::zero()};
     const uint8_t* all_bits[4] = {bits1, bits2, bits3, bits4};
 
