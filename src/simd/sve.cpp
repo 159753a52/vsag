@@ -1083,8 +1083,8 @@ RaBitQFloatBinaryIP(const float* vector, const uint8_t* bits, uint64_t dim, floa
     const uint64_t step = svcntw();
     svfloat32_t sum = svdup_f32(0.0f);
 
-    const svfloat32_t positive_val = inv_sqrt_d == 0.0F ? svdup_f32(1.0f) : svdup_f32(inv_sqrt_d);
-    const svfloat32_t negative_val = inv_sqrt_d == 0.0F ? svdup_f32(0.0f) : svdup_f32(-inv_sqrt_d);
+    const svfloat32_t positive_val = inv_sqrt_d < 1e-3 ? svdup_f32(1.0f) : svdup_f32(inv_sqrt_d);
+    const svfloat32_t negative_val = inv_sqrt_d < 1e-3 ? svdup_f32(0.0f) : svdup_f32(-inv_sqrt_d);
     svbool_t predicate = svwhilelt_b32(i, dim);
     do {
         svuint32_t predicate_values = svld1ub_u32(predicate, &predicate_array[i]);

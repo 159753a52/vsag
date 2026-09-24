@@ -723,7 +723,6 @@ void
 RotateOp(float* data, int idx, int dim_, int step);
 }  // namespace sve
 
-// Zero scale selects raw 0/1 bit planes; nonzero scale selects signed binary codes.
 using RaBitQFloatBinaryType = float (*)(const float* vector,
                                         const uint8_t* bits,
                                         uint64_t dim,
