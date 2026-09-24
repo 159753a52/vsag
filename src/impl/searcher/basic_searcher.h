@@ -159,7 +159,7 @@ private:
     uint64_t mock_dim_{0};
     uint32_t mock_n_trials_{1};
 
-    // runtime parameters
+    // Kept only so older runtime configurations remain accepted; visit no longer reads it.
     uint32_t prefetch_stride_visit_{3};
 };
 }  // namespace vsag

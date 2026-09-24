@@ -17,10 +17,14 @@
 
 #include <fmt/format.h>
 
+#include <sstream>
+
 #include "graph_interface_test.h"
 #include "impl/allocator/safe_allocator.h"
 #include "index_common_param.h"
 #include "sparse_graph_datacell_parameter.h"
+#include "storage/stream_reader.h"
+#include "storage/stream_writer.h"
 #include "unittest.h"
 using namespace vsag;
 
@@ -50,6 +54,30 @@ TEST_CASE("SparseGraphDataCell Basic Test", "[ut][SparseGraphDataCell]") {
     graph_param->max_degree_ = max_degree;
     graph_param->support_delete_ = is_support_delete;
     TestSparseGraphDataCell(graph_param, common_param, is_support_delete);
+}
+
+TEST_CASE("SparseGraphDataCell rejects oversized serialized adjacency",
+          "[ut][SparseGraphDataCell]") {
+    auto allocator = SafeAllocator::FactoryDefaultAllocator();
+    IndexCommonParam common_param;
+    common_param.dim_ = 32;
+    common_param.allocator_ = allocator;
+    auto graph_param = std::make_shared<SparseGraphDatacellParameter>();
+    graph_param->max_degree_ = 2;
+
+    auto graph = GraphInterface::MakeInstance(graph_param, common_param);
+    Vector<InnerIdType> neighbors(allocator.get());
+    neighbors.emplace_back(1);
+    neighbors.emplace_back(2);
+    graph->InsertNeighborsById(0, neighbors);
+    graph->SetMaximumDegree(1);
+
+    std::stringstream stream;
+    IOStreamWriter writer(stream);
+    graph->Serialize(writer);
+    IOStreamReader reader(stream);
+    auto restored = GraphInterface::MakeInstance(graph_param, common_param);
+    REQUIRE_THROWS(restored->Deserialize(reader));
 }
 
 TEST_CASE("SparseGraphDataCell Remove Test", "[ut][SparseGraphDataCell]") {
