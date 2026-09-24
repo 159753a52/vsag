@@ -57,10 +57,10 @@ BasicSearcher::visit(const GraphInterfacePtr& graph,
         graph->GetNeighbors(current_node_pair.second, neighbors);
     }
 
+    for (const auto id : neighbors) {
+        vl->Prefetch(id);
+    }
     if (not filter) {
-        for (const auto id : neighbors) {
-            vl->Prefetch(id);
-        }
         // Branch-free compaction: visited state is data dependent and poorly predicted, so always
         // store the id and advance only for unvisited ones. Slots at or past the returned count
         // are either overwritten by later ids or never read.

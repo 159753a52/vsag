@@ -39,7 +39,9 @@ template <typename QuantTmpl, typename LayoutTmpl>
 class FlattenDataCell : public FlattenInterface {
 public:
     FlattenDataCell() : layout_(std::make_shared<LayoutTmpl>()) {
-        this->prefetch_stride_code_ = 16;
+        if constexpr (LayoutTmpl::InMemory) {
+            this->prefetch_stride_code_ = 16;
+        }
     }
 
     explicit FlattenDataCell(const QuantizerParamPtr& quantization_param,
@@ -293,7 +295,9 @@ FlattenDataCell<QuantTmpl, LayoutTmpl>::FlattenDataCell(const QuantizerParamPtr&
                                                         const IOParamPtr& io_param,
                                                         const IndexCommonParam& common_param)
     : allocator_(common_param.allocator_.get()) {
-    this->prefetch_stride_code_ = 16;
+    if constexpr (LayoutTmpl::InMemory) {
+        this->prefetch_stride_code_ = 16;
+    }
     this->common_param_ = common_param;
     this->quantizer_ = std::make_shared<QuantTmpl>(quantization_param, common_param);
     this->code_size_ = quantizer_->GetCodeSize();

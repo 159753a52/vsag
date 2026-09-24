@@ -167,6 +167,10 @@ SparseGraphDataCell::Deserialize(StreamReader& reader) {
         StreamReader::ReadObj(reader, key);
         this->neighbors_[key] = std::make_unique<vsag::Vector<InnerIdType>>(allocator_);
         StreamReader::ReadVector(reader, *(this->neighbors_[key]));
+        if (this->neighbors_[key]->size() > this->maximum_degree_) {
+            throw VsagException(ErrorType::READ_ERROR,
+                                "serialized sparse graph has too many neighbors");
+        }
     }
     this->total_count_ = size;
     if (is_support_delete_) {
