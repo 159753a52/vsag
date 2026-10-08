@@ -407,7 +407,6 @@ FlattenDataCell<QuantTmpl, LayoutTmpl>::query(float* result_dists,
                                               InnerIdType id_count,
                                               QueryContext* ctx) {
     Allocator* search_alloc = select_query_allocator(ctx, allocator_);
-    const auto prefetch_stride = this->prefetch_stride_code_;
 
     const auto total_count = this->TotalCount();
     for (InnerIdType i = 0; i < id_count; ++i) {
@@ -417,7 +416,7 @@ FlattenDataCell<QuantTmpl, LayoutTmpl>::query(float* result_dists,
         }
     }
 
-    for (uint32_t i = 0; i < prefetch_stride and i < id_count; i++) {
+    for (uint32_t i = 0; i < this->prefetch_stride_code_ and i < id_count; i++) {
         this->layout_->Prefetch(idx[i], this->prefetch_depth_code_ * 64);
     }
     if constexpr (not LayoutTmpl::InMemory) {
@@ -456,8 +455,8 @@ FlattenDataCell<QuantTmpl, LayoutTmpl>::query(float* result_dists,
     int64_t i = 0;
     for (; i + 3 < id_count; i += 4) {
         for (int64_t j = 0; j < 4; ++j) {
-            if (i + j + prefetch_stride < id_count) {
-                this->layout_->Prefetch(idx[i + j + prefetch_stride],
+            if (i + j + this->prefetch_stride_code_ < id_count) {
+                this->layout_->Prefetch(idx[i + j + this->prefetch_stride_code_],
                                         this->prefetch_depth_code_ * 64);
             }
         }
