@@ -956,8 +956,6 @@ BasicSearcher::SetRuntimeParameters(const UnorderedMap<std::string, float>& new_
     bool ret = false;
     auto iter = new_params.find(PREFETCH_STRIDE_VISIT);
     if (iter != new_params.end()) {
-        // Note: BasicSearcher::visit uses full-batch prefetch and no longer consumes
-        // prefetch_stride_visit_. Kept for backward compatibility with external configurations.
         prefetch_stride_visit_ = static_cast<uint32_t>(iter->second);
         ret = true;
     }
