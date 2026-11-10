@@ -1519,7 +1519,8 @@ HGraph::elp_optimize() {
     } else {
         optimizer_->RegisterParameter(RuntimeParameter(PREFETCH_STRIDE_CODE, 1, 10, 1));
     }
-    optimizer_->RegisterParameter(RuntimeParameter(PREFETCH_STRIDE_VISIT, 1, 10, 1));
+    // PREFETCH_STRIDE_VISIT is not swept: the unfiltered search measured here prefetches all
+    // visited tags upfront, so every candidate value would run the same code.
     optimizer_->Optimize(searcher_);
 }
 
