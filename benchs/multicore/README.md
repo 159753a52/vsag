@@ -54,6 +54,7 @@ python3 summarize.py base final matrix.log
 - **配置**：HGraph，ODescent 建图，`max_degree=32`、`ef_construction=300`、`alpha=1.2`；基础编码为 RaBitQ 或 SQ8，FP32 精排，`topk=10`。`ef_search` 按基线召回率约 0.90 选取，各版本相同，取值见 `config.sh`。
 - **只读索引**：`eval_immutable.patch` 让评测工具在加载索引后调用 `SetImmutable()`，测的是只读检索场景。这处改动只用于测试。
 - **绑核**：N 个线程绑到 N 个物理核，每核一个逻辑 CPU，避免 SMT 干扰。默认按“逻辑 CPU 2k 和 2k+1 是同一物理核”处理，先用 `lscpu -e` 确认；布局不同时设置 `PIN_STEP`。
+- **线程分布**：默认 `PLACEMENT=spread`，把线程均匀分到各个 L3 域，和不绑核时系统调度的结果一致。`PLACEMENT=packed` 先占满一个 L3 域（8 个核）再用下一个：编码较长的 SQ8 在 8、16 线程会被单个 L3 域的内存带宽卡住，测出的提升偏低，不代表实际部署的情况。
 - **交替运行**：每轮内各版本交替执行，奇偶轮顺序相反，取各轮中位数，减少预热、温度和顺序带来的偏差。
 - **查询量**：每个线程的查询数由 `QPT` 决定，单次检索约 10～45 秒。
 - **扩展效率**：32 线程 QPS ÷（32 × 单线程 QPS），1.0 表示线性扩展。
@@ -70,7 +71,7 @@ python3 summarize.py base final matrix.log
 
 ## 参考结果
 
-在华为云 x2e.64u.128g（AMD Genoa，32 核 64 线程，1 个 NUMA 节点，4 个 L3 域，Ubuntu 24.04，GCC 13.3）上，final 相对 base 的 QPS 提升如下。所有配置召回率不变，达标的 5 组 P99 下降 16%～23%。
+在华为云 x2e.64u.128g（AMD Genoa，32 核 64 线程，1 个 NUMA 节点，4 个 L3 域，Ubuntu 24.04，GCC 13.3）上，final 相对 base 的 QPS 提升如下。下表是早期按 `PLACEMENT=packed` 测的。所有配置召回率不变，达标的 5 组 P99 下降 16%～23%。
 
 | 配置 | 1 线程 | 4 线程 | 8 线程 | 16 线程 | 32 线程 |
 | --- | --- | --- | --- | --- | --- |
@@ -82,7 +83,7 @@ python3 summarize.py base final matrix.log
 | GIST SQ8 | +15.8% | +13.7% | -2.8% | -2.8% | -0.8% |
 | Cohere SQ8 | +1.5% | +1.6% | +0.8% | +0.5% | +1.4% |
 
-GIST、Cohere 的 SQ8 编码为 768～960 字节，8 线程以上受单个 L3 域的内存带宽限制。用 `placement.sh` 把线程分散到 4 个 L3 域后，GIST SQ8 在 8 线程的提升为 +16.9%。
+GIST、Cohere 的 SQ8 编码为 768～960 字节，8 线程以上受单个 L3 域的内存带宽限制。用 `placement.sh` 把线程分散到 4 个 L3 域后，GIST SQ8 在 8 线程的提升为 +16.9%。所以默认改成了 `spread`；表中 GIST SQ8 8、16 线程的 −2.8% 是 `packed` 造成的，32 线程时两种分布相同，结果不受影响。
 
 ## 注意事项
 

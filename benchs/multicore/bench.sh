@@ -45,7 +45,7 @@ search() {
     local v=$1 name=$2 th=$3
     cfg "$name" || exit 1
     local ef=${EF_OVERRIDE:-$EF}
-    local cpus=${4:-$(cpus_packed "$th")} q=${5:-$((QPT * th))}
+    local cpus=${4:-$(cpus_for "$th")} q=${5:-$((QPT * th))}
     local tag=$WORK/tmp/s-$v-$name-$th-$$
     cat > "$tag.yaml" <<YAML
 global:

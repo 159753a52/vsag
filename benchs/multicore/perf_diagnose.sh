@@ -16,7 +16,7 @@ v=$1 c=$2 th=${3:-32} out=${4:-$WORK/perf}
 mkdir -p "$out"
 tag=$out/$v-$c
 EVENTS=${EVENTS:-cycles,instructions,L1-dcache-load-misses,L1-dcache-loads,cache-misses,ls_l1_d_tlb_miss.all,dTLB-load-misses,ls_dmnd_fills_from_sys.dram_io_near,ls_dmnd_fills_from_sys.local_ccx,ls_alloc_mab_count}
-cpus=$(cpus_packed "$th")
+cpus=$(cpus_for "$th")
 cfg "$c" || exit 1
 
 # Enough queries to keep the search busy for about 1.5-2 minutes (set QUERIES to change it);

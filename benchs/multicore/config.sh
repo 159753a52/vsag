@@ -39,3 +39,14 @@ cpus_packed() { seq -s, 0 "${PIN_STEP:-2}" $(( ${PIN_STEP:-2} * $1 - ${PIN_STEP:
 
 # The same number of threads spread evenly over all logical CPUs, i.e. across L3 domains.
 cpus_spread() { local step=$(( $(nproc) / $1 )); seq -s, 0 "$step" $(( step * ($1 - 1) )); }
+
+# CPUs for N threads. PLACEMENT=spread (default) spreads the threads over all L3 domains, which
+# matches where the scheduler puts unpinned threads. PLACEMENT=packed fills one L3 domain first;
+# with long codes it saturates that domain's memory bandwidth from 8 threads on (see README).
+cpus_for() {
+    case ${PLACEMENT:-spread} in
+        spread) cpus_spread "$1" ;;
+        packed) cpus_packed "$1" ;;
+        *) echo "unknown PLACEMENT: $PLACEMENT (use spread or packed)" >&2; return 1 ;;
+    esac
+}
