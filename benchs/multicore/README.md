@@ -23,7 +23,9 @@ bash benchs/multicore/reproduce.sh
 | 名称 | 代码 |
 | --- | --- |
 | base | `a2baa8fb`，#3014 合入前的官方 main |
-| final | `d5108431`（已含 #3014）+ #3304 预取默认值 + #3302 visit/候选堆 + #3303 SQ8 四路 L2 |
+| final | fork 分支 `bench/multicore-final`：`d5108431`（已含 #3014）+ #3304 预取默认值和长编码整条预取 + #3302 visit/候选堆 + #3303 SQ8 四路（L2 和内积）+ #3355 分块内存按 64 字节对齐 |
+
+final 分支就是把这四个 PR 按顺序叠在 `d5108431` 上。#3302 和 #3304 都改了 `HGraph::elp_optimize`，叠的时候保留 #3304 的步长扫参写法，并按 #3302 去掉 visit 步长的扫参。
 
 ## 分步使用
 
@@ -31,7 +33,8 @@ bash benchs/multicore/reproduce.sh
 cd benchs/multicore
 bash prepare_data.sh                       # 或只准备部分数据集：prepare_data.sh gist sift
 bash build_variant.sh base a2baa8fb        # 名称 + 基准提交 + 要 cherry-pick 的提交
-bash build_variant.sh final d5108431 136b783e 18dc9179 175a922a 54c268e9
+git fetch https://github.com/159753a52/vsag.git +bench/multicore-final:refs/bench/final
+bash build_variant.sh final refs/bench/final
 bash bench.sh build gist-rabitq            # 用 base 建索引，所有版本共用这一份
 bash bench.sh search final gist-rabitq 32  # 单次检索，输出一行结果
 bash run_matrix.sh 3 "gist-rabitq" base final >> matrix.log
@@ -48,6 +51,20 @@ python3 summarize.py base final matrix.log
 | `summarize.py` | 取各轮中位数，输出相对基线的 QPS、P50、P99 变化、召回率差和扩展效率 |
 | `perf_diagnose.sh` | 负载下采集 perf 计数器、PipelineL1/L2 和热点函数 |
 | `placement.sh` | 对比线程集中绑核和分散到各 L3 域，判断是否受单个 L3 域的内存带宽限制 |
+
+### 只测某一项改动
+
+比较“加这一项”和“不加这一项”的两份代码，其余部分保持相同。例如单独测 #3355 的对齐：
+
+```bash
+git fetch https://github.com/antgroup/vsag.git +pull/3355/head:refs/bench/pr3355
+bash build_variant.sh m0 680cb155                  # #3355 的基点
+bash build_variant.sh mal 680cb155 refs/bench/pr3355~1..refs/bench/pr3355
+bash run_matrix.sh 3 "sift-sq8 gist-rabitq" m0 mal >> align.log
+python3 summarize.py m0 mal align.log
+```
+
+只测某一项时，数据集要选这一项会影响到的：SQ8 四路内积只影响 Cohere SQ8（cosine），长编码整条预取只影响 GIST、Cohere 的 SQ8（768～960 字节），对齐影响全部 7 组。
 
 ## 测量方法
 
@@ -71,19 +88,21 @@ python3 summarize.py base final matrix.log
 
 ## 参考结果
 
-在华为云 x2e.64u.128g（AMD Genoa，32 核 64 线程，1 个 NUMA 节点，4 个 L3 域，Ubuntu 24.04，GCC 13.3）上，final 相对 base 的 QPS 提升如下。下表是早期按 `PLACEMENT=packed` 测的。所有配置召回率不变，达标的 5 组 P99 下降 16%～23%。
+在华为云 x2e.64u.128g（AMD Genoa，32 核 64 线程，1 个 NUMA 节点，4 个 L3 域，Ubuntu 24.04，GCC 13.3）上，final 相对 base 的 QPS 提升如下（`PLACEMENT=spread`，各版本交替跑 2 轮取平均，2026 年 11 月 14 日）。所有配置召回率不变，P99 延迟全部下降，降幅 7.6%～31.4%。
 
 | 配置 | 1 线程 | 4 线程 | 8 线程 | 16 线程 | 32 线程 |
 | --- | --- | --- | --- | --- | --- |
-| GIST RaBitQ | +28.9% | +26.8% | +24.3% | +24.1% | +23.6% |
-| SIFT RaBitQ | +25.1% | +22.0% | +21.9% | +21.0% | +21.9% |
-| Cohere RaBitQ | +22.5% | +21.7% | +21.6% | +22.4% | +20.3% |
-| OpenAI RaBitQ | +21.3% | +21.6% | +18.1% | +18.4% | +19.0% |
-| SIFT SQ8 | +17.7% | +17.8% | +18.4% | +18.6% | +16.7% |
-| GIST SQ8 | +15.8% | +13.7% | -2.8% | -2.8% | -0.8% |
-| Cohere SQ8 | +1.5% | +1.6% | +0.8% | +0.5% | +1.4% |
+| GIST RaBitQ | +41.6% | +42.9% | +39.5% | +37.7% | +36.6% |
+| SIFT RaBitQ | +26.7% | +27.3% | +23.9% | +25.2% | +23.2% |
+| Cohere RaBitQ | +21.1% | +22.2% | +21.5% | +21.1% | +20.8% |
+| OpenAI RaBitQ | +19.9% | +19.6% | +19.6% | +19.5% | +18.3% |
+| SIFT SQ8 | +31.1% | +30.0% | +30.9% | +28.7% | +27.5% |
+| GIST SQ8 | +31.3% | +28.1% | +29.7% | +25.5% | +7.6% |
+| Cohere SQ8 | +21.0% | +23.8% | +21.9% | +19.3% | +9.7% |
 
-GIST、Cohere 的 SQ8 编码为 768～960 字节，8 线程以上受单个 L3 域的内存带宽限制。用 `placement.sh` 把线程分散到 4 个 L3 域后，GIST SQ8 在 8 线程的提升为 +16.9%。所以默认改成了 `spread`；表中 GIST SQ8 8、16 线程的 −2.8% 是 `packed` 造成的，32 线程时两种分布相同，结果不受影响。
+这组数据测的代码和 final 分支的检索路径相同，final 分支后来只补了单测和一处检索参数的取值检查。
+
+GIST、Cohere 的 SQ8 编码为 768～960 字节，32 线程时每个 L3 域的内存带宽已经用满，所以这一档提升较小。早期按 `PLACEMENT=packed` 测时，GIST SQ8 在 8、16 线程测出过 −2.8%，那是 8 个线程挤在同一个 L3 域造成的，现在默认的 `spread` 不会出现。
 
 ## 注意事项
 
